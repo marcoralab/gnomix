@@ -1,0 +1,10 @@
+raw.githubusercontent.com
+reference
+past_runs
+input
+output
+src
+sandbox
+.snakemake
+.cache
+.ropeproject

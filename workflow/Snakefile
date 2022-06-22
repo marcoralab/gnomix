@@ -1,0 +1,407 @@
+from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
+
+HTTP = HTTPRemoteProvider()
+
+
+BioMe_dir = "/sc/arion/projects/LOAD/Data/BioME/sample_QC/GWASampleFiltering/input/"
+
+DATASETS = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA", "NYSCF_array"]
+CHROMS = 17
+BUILD = "hg19"
+array = True
+
+rule all:
+    input:
+        expand('output/{dataset}_chr{chrom}/{dataset}_chr{chrom}.vcf.gz',
+               dataset=DATASETS, chrom=CHROMS)
+
+rule biome_filter:
+    input: multiext(BioMe_dir + "{bmcenter}_hg19", ".bed", ".bim", ".fam")
+    output: multiext("intermediate/BioMe_array-{bmcenter}", ".bed", ".bim", ".fam")
+    params:
+        ins = BioMe_dir + "{bmcenter}_hg19",
+        out = "intermediate/BioMe_array-{bmcenter}"
+    resources:
+        mem_mb = 10000,
+        time_min = 30
+    conda: "envs/plink.yaml"
+    shell:
+        """
+plink --bfile {params.ins} --chr 17 --make-bed --out {params.out}
+"""
+
+rule NYCSF_binary:
+    input: multiext("input/NYSCF_MSSM_Chr17", ".ped", ".map")
+    output: multiext("intermediate/NYSCF_array", ".bed", ".bim", ".fam")
+    params:
+        ins = "input/NYSCF_MSSM_Chr17",
+        out = "intermediate/NYSCF_array"
+    resources:
+        mem_mb = 10000,
+        time_min = 30
+    conda: "envs/plink.yaml"
+    shell:
+        """
+plink --file {params.ins} --make-bed --out {params.out}
+"""
+
+rule Sample_Flip:
+    input:
+        bim = "intermediate/{dataset}" + '.bim',
+        bed = "intermediate/{dataset}" + '.bed',
+        fam = "intermediate/{dataset}" + '.fam',
+        fasta = expand("reference/human_g1k_{gbuild}.fasta", gbuild=BUILD)
+    output:
+        multiext("intermediate/{dataset}_flipped", ".bim", ".bed", ".fam")
+    params:
+        stem = "intermediate/{dataset}"
+    resources:
+        mem_mb = 10000,
+        time_min = 30
+    container: 'docker://befh/flippyr:0.5.3'
+    shell: "flippyr -p {input.fasta} -o {params.stem} {input.bim}"
+
+rule Sample_ChromPosRefAlt:
+    input:
+        flipped = "intermediate/{dataset}_flipped.bim"
+    output:
+        bim = temp("intermediate/{dataset}_flipped_ChromPos.bim"),
+        snplist = temp("intermediate/{dataset}_flipped_snplist")
+    threads: 2
+    resources:
+        mem_mb = 8000,
+        time_min = 30
+    container: 'docker://befh/r_env_gwasamplefilt:5'
+    script: 'scripts/bim_ChromPosRefAlt.R'
+
+# Recode sample plink file to vcf
+rule vcf:
+    input:
+        bed = "intermediate/{dataset}_flipped.bed",
+        bim = "intermediate/{dataset}_flipped_ChromPos.bim",
+        fam = "intermediate/{dataset}_flipped.fam"
+    output: "intermediate/{dataset}.vcf.gz"
+    params:
+        out = "{dataset}"
+    resources:
+        mem_mb = 10000,
+        time_min = 30
+    conda: "envs/plink.yaml"
+    shell:
+        '''
+plink --bed {input.bed} --bim {input.bim} --fam {input.fam} --recode vcf bgz \
+  --real-ref-alleles --out {params.out}
+'''
+
+
+rule idx_vcf:
+    input: "intermediate/{dataset}.vcf.gz"
+    output: "intermediate/{dataset}.vcf.gz.tbi"
+    conda: "envs/bcftools.yaml"
+    threads: 1
+    resources:
+        mem_mb = 4000,
+        time_min = 30
+    shell: "bcftools index -t {input}"
+
+rule bcf:
+    input:
+        vcf = "intermediate/{dataset}.vcf.gz",
+        tbi = "intermediate/{dataset}.vcf.gz.tbi",
+        fasta = "reference/human_g1k_{build}.fasta"
+    output: "intermediate/{dataset}_chr{chrom}.{build}.bcf"
+    conda: "envs/bcftools.yaml"
+    threads: 1
+    resources:
+        mem_mb = 4000,
+        time_min = 30
+    shell:
+        """
+bcftools view -r {wildcards.chrom} {input.vcf} | \
+  bcftools norm -Ob -o {output} -d none -f {input.fasta} && \
+bcftools index {output}
+"""
+
+rule makeref_tg:
+    input:
+        vcf = "reference/1000gRaw.{build}.chr{chrom}.vcf.gz",
+        fasta = "reference/human_g1k_{build}.fasta"
+    output: "reference_proc/1000g.{build}.chr{chrom}.bcf"
+    conda: "envs/bcftools.yaml"
+    threads: 4
+    resources:
+        mem_mb = 4000,
+        time_min = 30
+    shell:
+        '''
+bcftools view -Ou -c 2 {input.vcf} | \
+  bcftools norm -Ou -m -any | \
+  bcftools norm -Ob -o {output} -d none -f {input.fasta} && \
+ bcftools index -f {output}
+'''
+
+rule filter_ref:
+    input:
+      ref = rules.makeref_tg.output,
+      samp = rules.vcf.output
+    output: "reference_proc/1000g.{build}.chr{chrom}.filtered_{dataset}.bcf"
+    conda: "envs/bcftools.yaml"
+    threads: 4
+    resources:
+        mem_mb = 4000,
+        time_min = 30
+    shell:
+        '''
+bcftools view --regions-file {input.samp} -Ob -o {output}
+bcftools index -f {output}
+'''
+
+rule eagle:
+    input:
+        target = expand("intermediate/{{dataset}}_chr{{chrom}}.{build}.bcf", build=BUILD),
+        ref = expand("reference_proc/1000g.{build}.chr{{chrom}}.bcf", build=BUILD)
+    output: "intermediate/{dataset}_chr{chrom}_phased.vcf.gz"
+    params:
+        outstem = "intermediate/{dataset}_chr{chrom}_phased"
+    log: "logs/{dataset}_chr{chrom}.eagle.log"
+    threads: 10
+    resources:
+        mem_mb = 4000,
+        walltime = '4:00'
+    container: 'docker://befh/eagle:v2.4.1'
+    shell:
+        '''
+eagle --vcfTarget={input.target} --vcfRef={input.ref} \
+  --geneticMapFile=/tables/genetic_map_hg19_withX.txt.gz \
+  --outPrefix={params.outstem} --numThreads=10 --vcfOutFormat=z \
+  2>&1 | tee {log}
+'''
+
+rule geneticMapGnomix:
+    input: HTTP.remote("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_hg19_withX.txt.gz")
+    output: "reference_proc/genetic_map_hg19_withX.gmap"
+    resources:
+        mem_mb = 1000,
+        time_min = 30
+    shell:
+        r'''
+zcat {input} | \
+  awk 'BEGIN {{OFS="\t"; print "#chromosome\tposition\tGenetic_Map(cM)"}} NR > 1 {{print $1,$2,$4}}' \
+  > {output}
+'''
+
+reporoot = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main"
+confstem = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main/configs"
+if array:
+    gconfig = HTTP.remote(reporoot + "/configs/config_array.yaml")
+else:
+    gconfig = HTTP.remote(reporoot + "/configs/config.yaml")
+
+rule sample_list:
+    input: expand("intermediate/{{dataset}}_chr{chrom}_phased.vcf.gz", chrom=CHROMS)
+    output: "intermediate/sample_lists/{dataset}_all.txt",
+    conda: "envs/bcftools.yaml"
+    threads: 1
+    resources:
+        mem_mb = 4000,
+        time_min = 30
+    shell: "bcftools query -l {input[0]} > {output}"
+
+checkpoint sample_list_split:
+    input: rules.sample_list.output
+    output: directory("intermediate/sample_lists/split_{dataset}")
+    params:
+        splitstem = "intermediate/sample_lists/split_{dataset}/split."
+    threads: 1
+    resources:
+        mem_mb = 4000,
+        time_min = 30
+    shell: "mkdir -f {output} && split -l 100 -a 4 -d {output} {params.splitstem}"
+
+rule splits:
+    input:
+        sample_list = "intermediate/sample_lists/split_{dataset}/split.{chunk}",
+        vcf = rules.eagle.output
+    output:
+        vcf = temp("intermediate/{dataset}_chr{chrom}_phased.{chunk}.vcf.gz"),
+        tbi = temp("intermediate/{dataset}_chr{chrom}_phased.{chunk}.vcf.gz.tbi"),
+    threads: 4
+    resources:
+        mem_mb = 4000,
+        time_min = 30
+    shell:
+        '''
+bcftools view {input} --samples-file {input.sample_list} -Oz -o {output.vcf}
+bcftools index -tf {output.vcf}
+'''    
+
+rule gnomix_model:
+    input:
+        query = "{dataset}_chr{chrom}_phased.0001.vcf.gz",
+        genetic_map = rules.geneticMapGnomix.output,
+        reference = rules.filter_ref.output,
+        sample_map = HTTP.remote(reporoot + "/demo/data/1000g.smap"),
+        config = gconfig
+    output:
+        temp('output/{dataset}_chr{chrom}/query_file_phased.vcf')
+    params:
+        output_folder = 'output/models/{dataset}_chr{chrom}',
+        phase = 'False', #True or False
+    threads: 40
+    resources:
+        mem_mb = 35000,
+        walltime = '140:00'
+    container: "docker://befh/gnomix:v1"
+    shell:
+        '''
+python3 /gnomix/gnomix.py {input.query} {params.output_folder} \
+  {wildcards.chrom} {params.phase} \
+  {input.genetic_map} {input.reference} {input.sample_map} \
+  {input.config}
+'''
+
+gchunkdir = 'output/chunked/{dataset}_chr{chrom}_chunk{chunk}'
+
+rule gnomix:
+    input:
+        query = "{dataset}_chr{chrom}_phased.{chunk}.vcf.gz",
+        genetic_map = rules.geneticMapGnomix.output,
+        reference = rules.filter_ref.output,
+        sample_map = HTTP.remote(reporoot + "/demo/data/1000g.smap"),
+        config = gconfig
+    output:
+        vcf = temp(gchunkdir + '/query_file_phased.vcf'),
+        fb = gchunkdir + 'query_results.fb',
+        msp = gchunkdir + 'query_results.msp'
+    params:
+        output_folder = gchunkdir,
+        phase = 'True', #True or False
+    threads: 40
+    resources:
+        mem_mb = 35000,
+        walltime = '140:00'
+    container: "docker://befh/gnomix:v1"
+    shell:
+        '''
+python3 /gnomix/gnomix.py {input.query} {params.output_folder} \
+  {wildcards.chrom} {params.phase} \
+  {input.genetic_map} {input.reference} {input.sample_map} \
+  {input.config}
+'''
+
+rule Compress:
+    input: gchunkdir + '/query_file_phased.vcf'
+    output:
+        vcf = temp(gchunkdir + '/{dataset}_chr{chrom}.vcf.gz'),
+        tbi = gchunkdir + '/{dataset}_chr{chrom}.vcf.gz.tbi'
+    threads: 2
+    resources:
+        mem_mb = 4000,
+        walltime = '4:00'
+    conda: "envs/bcftools.yaml"
+    shell:
+        '''
+bcftools view -Oz -o {output.vcf} {input}
+bcftools index -tf {output.vcf}
+'''
+
+gchunkdirp = 'output/chunked/{{dataset}}_chr{{chrom}}_chunk{chunk}'
+
+def aggregate(wildcards, fname):
+    #import ipdb; ipdb.set_trace()
+    checkpoint_output = checkpoints.sample_list_split.get(**wildcards).output
+    chunks = glob_wildcards(checkpoint_output).chunk
+    # ins = {
+    #     "vcf": expand(gchunkdir + '/{{dataset}}_chr{{chrom}}.vcf.gz', chunk=chunks),
+    #     "fb": expand(gchunkdir + '/query_results.fb', chunk=chunks),
+    #     "msp": expand(gchunkdir + '/query_results.msp', chunk=chunks)
+    # }
+    # return ins
+    return expand(gchunkdir + fname, chunk=chunks)
+
+rule merge_gnomad:
+    input:
+        vcf = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz'), 
+        fb = lambda wc: aggregate(wc, '/query_results.fb'), 
+        msp = lambda wc: aggregate(wc, '/query_results.msp') 
+    output:
+        vcf = 'output/merged/{dataset}_chr{chrom}.vcf.gz',
+        tbi = 'output/merged/{dataset}_chr{chrom}.vcf.gz.tbi',
+        msp = 'output/merged/{dataset}_chr{chrom}.msp',
+        fb = 'output/merged/{dataset}_chr{chrom}.fb',
+    threads: 2
+    resources:
+        mem_mb = 4000,
+        walltime = '4:00'
+    conda: "envs/gnomad_merge.yaml"
+    shell:
+        r'''
+bcftools merge -Oz -o {output.vcf} {input.vcf}
+bcftools index -tf {output.vcf}
+
+msps=({input.msp}) # make array of inputs
+cp "${{msps[0]}}" {output.msp} # copy first input to output
+msps=("${{msps[@]:1}}") # delete first input from array
+
+for msp in ${{msps[@]}}; do
+  mlr --tsv --skip-comments-with "#Subpopulation" join \
+   -j '#chm,spos,epos,sgpos,egpos,n snps' \
+   -f {output.msp} $msp > {output.msp}
+done
+
+fbs=({input.fb}) # make array of inputs
+cp "${{fbs[0]}}" {output.fb} # copy first input to temp output
+fbs=("${{fbs[@]:1}}") # delete first input from array
+
+for fb in ${{fbs[@]}}; do
+  mlr --tsv --skip-comments join \
+   -j 'chromosome,physical_position,genetic_position,genetic_marker_index' \
+   -f {output.fb} $fb > {output.fb}
+done
+
+get_head () {{
+  awk 'NR == 1 {{a[$0]; print; next}} FNR == 1 && !($0 in a) \
+    {{print "Header comment different"; exit 1}}' $@
+}}
+
+append_head () {{ sed -i "1s/^/$1\n/" $2 ; }}
+
+append_head "$(get_head {input.fb})" {output.fb}
+append_head "$(get_head {input.msp})" {output.msp}
+'''
+
+rule Concatenate:
+    input:
+        vcf = expand('output/merged/{{dataset}}_chr{chrom}.vcf.gz', chrom=CHROMS),
+        tbi = expand('output/merged/{{dataset}}_chr{chrom}.vcf.gz.tbi', chrom=CHROMS),
+    output:
+        vcf = 'output/{dataset}_chrall.vcf.gz',
+        tbi = 'output/{dataset}_chrall.vcf.gz.tbi'
+    threads: 4
+    resources:
+        mem_mb = 4000,
+        walltime = '4:00'
+    conda: "envs/bcftools.yaml"
+    shell:
+        r'''
+bcftools concat -Oz -o {output.vcf} --threads 2 {input.vcf}
+bcftools index -tf {output.vcf}
+'''
+
+rule Merge:
+    input:
+        vcf = expand('output/{dataset}_chrall.vcf.gz', dataset=DATASETS),
+        tbi = expand('output/{dataset}_chrall.vcf.gz.tbi', dataset=DATASETS)
+    output:
+        vcf = "output/merged.vcf.gz",
+        tbi = "output/merged.vcf.gz.tbi"
+    threads: 4
+    resources:
+        mem_mb = 4000,
+        walltime = '4:00'
+    conda: "envs/bcftools.yaml"
+    shell:
+        r'''
+bcftools merge -m none -Oz -o {output.vcf} --threads 2 {input.vcf}
+bcftools index -tf {output.vcf}
+'''
