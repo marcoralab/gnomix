@@ -1,19 +1,41 @@
+from snakemake.remote.FTP import RemoteProvider as FTPRemoteProvider
 from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
 
-HTTP = HTTPRemoteProvider()
+from urllib.request import urlopen
+from urllib.error import URLError
+
+try:
+    response = urlopen('https://www.google.com/', timeout=10)
+    iconnect = True
+except urllib.error.URLError as ex:
+    iconnect = False
+
+
+class dummyprovider:
+    def remote(string_, allow_redirects="foo", immediate_close="bar"):
+        return string_
+
+if iconnect: # and not ('nointernet' in config and config['nointernet']):
+    FTP = FTPRemoteProvider()
+    HTTP = HTTPRemoteProvider()
+else:
+    FTP = dummyprovider
+    HTTP = dummyprovider
 
 
 BioMe_dir = "/sc/arion/projects/LOAD/Data/BioME/sample_QC/GWASampleFiltering/input/"
 
-DATASETS = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA", "NYSCF_array"]
+DATASETS_all = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA", "NYSCF_array"]
+DATASETS = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA"]
 CHROMS = 17
 BUILD = "hg19"
 array = True
 
 rule all:
     input:
-        expand('output/{dataset}_chr{chrom}/{dataset}_chr{chrom}.vcf.gz',
-               dataset=DATASETS, chrom=CHROMS)
+        "output/merged.vcf.gz"
+        #expand('output/{dataset}_chr{chrom}/{dataset}_chr{chrom}.vcf.gz',
+        #       dataset=DATASETS, chrom=CHROMS)
 
 rule biome_filter:
     input: multiext(BioMe_dir + "{bmcenter}_hg19", ".bed", ".bim", ".fam")
@@ -82,7 +104,7 @@ rule vcf:
         fam = "intermediate/{dataset}_flipped.fam"
     output: "intermediate/{dataset}.vcf.gz"
     params:
-        out = "{dataset}"
+        out = "intermediate/{dataset}"
     resources:
         mem_mb = 10000,
         time_min = 30
@@ -144,7 +166,7 @@ rule filter_ref:
     input:
       ref = rules.makeref_tg.output,
       samp = rules.vcf.output
-    output: "reference_proc/1000g.{build}.chr{chrom}.filtered_{dataset}.bcf"
+    output: "reference_proc/1000g.{build}.chr{chrom}.filtered_{dataset}.vcf.gz"
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
@@ -152,7 +174,7 @@ rule filter_ref:
         time_min = 30
     shell:
         '''
-bcftools view --regions-file {input.samp} -Ob -o {output}
+bcftools view --regions-file {input.samp} -Oz -o {output} {input.ref}
 bcftools index -f {output}
 '''
 
@@ -178,7 +200,7 @@ eagle --vcfTarget={input.target} --vcfRef={input.ref} \
 '''
 
 rule geneticMapGnomix:
-    input: HTTP.remote("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_hg19_withX.txt.gz")
+    input: HTTP.remote("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_hg19_withX.txt.gz") if iconnect else ''
     output: "reference_proc/genetic_map_hg19_withX.gmap"
     resources:
         mem_mb = 1000,
@@ -190,12 +212,12 @@ zcat {input} | \
   > {output}
 '''
 
-reporoot = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main"
+reporoot = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main" 
 confstem = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main/configs"
 if array:
-    gconfig = HTTP.remote(reporoot + "/configs/config_array.yaml")
+    gconfig = HTTP.remote(reporoot + "/configs/config_array.yaml") if iconnect else ''
 else:
-    gconfig = HTTP.remote(reporoot + "/configs/config.yaml")
+    gconfig = HTTP.remote(reporoot + "/configs/config.yaml") if iconnect else ''
 
 rule sample_list:
     input: expand("intermediate/{{dataset}}_chr{chrom}_phased.vcf.gz", chrom=CHROMS)
@@ -216,7 +238,7 @@ checkpoint sample_list_split:
     resources:
         mem_mb = 4000,
         time_min = 30
-    shell: "mkdir -f {output} && split -l 100 -a 4 -d {output} {params.splitstem}"
+    shell: "mkdir -p {output} && split -l 100 -a 4 -d {input} {params.splitstem}"
 
 rule splits:
     input:
@@ -225,33 +247,54 @@ rule splits:
     output:
         vcf = temp("intermediate/{dataset}_chr{chrom}_phased.{chunk}.vcf.gz"),
         tbi = temp("intermediate/{dataset}_chr{chrom}_phased.{chunk}.vcf.gz.tbi"),
+    conda: "envs/bcftools.yaml"
     threads: 4
     resources:
         mem_mb = 4000,
         time_min = 30
     shell:
         '''
-bcftools view {input} --samples-file {input.sample_list} -Oz -o {output.vcf}
+bcftools view --samples-file {input.sample_list} -Oz -o {output.vcf} {input.vcf}
 bcftools index -tf {output.vcf}
-'''    
+'''
+
+rule vcf_model_fit:
+    input:
+        sample_list = rules.sample_list.output,
+        vcf = rules.eagle.output
+    output:
+        sample_list = temp("intermediate/{dataset}_chr{chrom}_phased_modelfit.samples"),
+        vcf = temp("intermediate/{dataset}_chr{chrom}_phased_modelfit.vcf.gz"),
+        tbi = temp("intermediate/{dataset}_chr{chrom}_phased_modelfit.vcf.gz.tbi"),
+    conda: "envs/bcftools.yaml"
+    threads: 4
+    resources:
+        mem_mb = 4000,
+        time_min = 30
+    shell:
+        '''
+head -n4 {input.sample_list} > {output.sample_list}
+bcftools view --samples-file {output.sample_list} -Oz -o {output.vcf} {input.vcf}
+bcftools index -tf {output.vcf}
+'''
 
 rule gnomix_model:
     input:
-        query = "{dataset}_chr{chrom}_phased.0001.vcf.gz",
+        query = "intermediate/{dataset}_chr{chrom}_phased_modelfit.vcf.gz",
         genetic_map = rules.geneticMapGnomix.output,
-        reference = rules.filter_ref.output,
-        sample_map = HTTP.remote(reporoot + "/demo/data/1000g.smap"),
+        reference = expand("reference_proc/1000g.{build}.chr{{chrom}}.filtered_{{dataset}}.vcf.gz", build=BUILD),
+        sample_map = HTTP.remote(reporoot + "/demo/data/1000g.smap") if iconnect else '',
         config = gconfig
     output:
-        temp('output/{dataset}_chr{chrom}/query_file_phased.vcf')
+        'output/models/{dataset}_chr{chrom}/models/model_chm_{chrom}/model_chm_{chrom}.pkl'
     params:
         output_folder = 'output/models/{dataset}_chr{chrom}',
         phase = 'False', #True or False
     threads: 40
     resources:
-        mem_mb = 35000,
+        mem_mb = 4000,
         walltime = '140:00'
-    container: "docker://befh/gnomix:v1"
+    container: "docker://befh/gnomix:v2"
     shell:
         '''
 python3 /gnomix/gnomix.py {input.query} {params.output_folder} \
@@ -264,35 +307,30 @@ gchunkdir = 'output/chunked/{dataset}_chr{chrom}_chunk{chunk}'
 
 rule gnomix:
     input:
-        query = "{dataset}_chr{chrom}_phased.{chunk}.vcf.gz",
-        genetic_map = rules.geneticMapGnomix.output,
-        reference = rules.filter_ref.output,
-        sample_map = HTTP.remote(reporoot + "/demo/data/1000g.smap"),
-        config = gconfig
+        query = "intermediate/{dataset}_chr{chrom}_phased.{chunk}.vcf.gz",
+        model = rules.gnomix_model.output
     output:
         vcf = temp(gchunkdir + '/query_file_phased.vcf'),
-        fb = gchunkdir + 'query_results.fb',
-        msp = gchunkdir + 'query_results.msp'
+        fb = gchunkdir + '/query_results.fb',
+        msp = gchunkdir + '/query_results.msp'
     params:
         output_folder = gchunkdir,
         phase = 'True', #True or False
     threads: 40
     resources:
-        mem_mb = 35000,
+        mem_mb = 2000,
         walltime = '140:00'
-    container: "docker://befh/gnomix:v1"
+    container: "docker://befh/gnomix:v2"
     shell:
         '''
 python3 /gnomix/gnomix.py {input.query} {params.output_folder} \
-  {wildcards.chrom} {params.phase} \
-  {input.genetic_map} {input.reference} {input.sample_map} \
-  {input.config}
+  {wildcards.chrom} {params.phase} {input.model}
 '''
 
 rule Compress:
     input: gchunkdir + '/query_file_phased.vcf'
     output:
-        vcf = temp(gchunkdir + '/{dataset}_chr{chrom}.vcf.gz'),
+        vcf = gchunkdir + '/{dataset}_chr{chrom}.vcf.gz',
         tbi = gchunkdir + '/{dataset}_chr{chrom}.vcf.gz.tbi'
     threads: 2
     resources:
@@ -309,19 +347,20 @@ gchunkdirp = 'output/chunked/{{dataset}}_chr{{chrom}}_chunk{chunk}'
 
 def aggregate(wildcards, fname):
     #import ipdb; ipdb.set_trace()
-    checkpoint_output = checkpoints.sample_list_split.get(**wildcards).output
-    chunks = glob_wildcards(checkpoint_output).chunk
+    checkpoint_output = checkpoints.sample_list_split.get(**wildcards).output[0]
+    chunks = glob_wildcards(checkpoint_output + "/split.{chunk}").chunk
     # ins = {
     #     "vcf": expand(gchunkdir + '/{{dataset}}_chr{{chrom}}.vcf.gz', chunk=chunks),
     #     "fb": expand(gchunkdir + '/query_results.fb', chunk=chunks),
     #     "msp": expand(gchunkdir + '/query_results.msp', chunk=chunks)
     # }
     # return ins
-    return expand(gchunkdir + fname, chunk=chunks)
+    return expand(gchunkdirp + fname, chunk=chunks)
 
 rule merge_gnomad:
     input:
-        vcf = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz'), 
+        vcf = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz'),
+        tbi = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz.tbi'), 
         fb = lambda wc: aggregate(wc, '/query_results.fb'), 
         msp = lambda wc: aggregate(wc, '/query_results.msp') 
     output:
@@ -329,6 +368,7 @@ rule merge_gnomad:
         tbi = 'output/merged/{dataset}_chr{chrom}.vcf.gz.tbi',
         msp = 'output/merged/{dataset}_chr{chrom}.msp',
         fb = 'output/merged/{dataset}_chr{chrom}.fb',
+        tmp = temp('output/merged/{dataset}_chr{chrom}.tmp')
     threads: 2
     resources:
         mem_mb = 4000,
@@ -339,24 +379,44 @@ rule merge_gnomad:
 bcftools merge -Oz -o {output.vcf} {input.vcf}
 bcftools index -tf {output.vcf}
 
+tmpfile={output.tmp}
+out_msp={output.msp}
+out_fb={output.fb}
+
 msps=({input.msp}) # make array of inputs
-cp "${{msps[0]}}" {output.msp} # copy first input to output
+msp_first="${{msps[0]}}"
+cp "$msp_first" "$out_msp" # copy first input to output
 msps=("${{msps[@]:1}}") # delete first input from array
 
 for msp in ${{msps[@]}}; do
-  mlr --tsv --skip-comments-with "#Subpopulation" join \
-   -j '#chm,spos,epos,sgpos,egpos,n snps' \
-   -f {output.msp} $msp > {output.msp}
+  if ! diff -q <(cut -f1-6 "$msp_first") <(cut -f1-6 "$msp"); then
+    echo "$msp has different variant ranges than the first chunk"
+    exit 1
+  fi
+  paste "$out_msp" <(cut -f1-6 --complement $msp) > "$tmpfile"
+  cp "$tmpfile" "$out_msp"
+  nrow=$(cat "$out_msp" | tail -n +3 | wc -l)
+  ncol=$(sed -n '2{{s/\t/\n/g;p;q}}' "$out_msp" | tail -n +7 | wc -l)
+  echo $msp "$nrow" rows, "$ncol" columns
 done
 
+rm "$tmpfile"
+
 fbs=({input.fb}) # make array of inputs
-cp "${{fbs[0]}}" {output.fb} # copy first input to temp output
+fb_first="${{fbs[0]}}"
+cp "$fb_first" "$out_fb" # copy first input to output
 fbs=("${{fbs[@]:1}}") # delete first input from array
 
 for fb in ${{fbs[@]}}; do
-  mlr --tsv --skip-comments join \
-   -j 'chromosome,physical_position,genetic_position,genetic_marker_index' \
-   -f {output.fb} $fb > {output.fb}
+  if ! diff -q <(cut -f1-4 "$fb_first") <(cut -f1-4 "$fb"); then
+    echo "$msp has different variant ranges than the first chunk"
+    #exit 1
+  fi
+  paste $out_fb <(cut -f1-4 --complement $fb) > "$tmpfile"
+  cp "$tmpfile" "$out_fb"
+  nrow=$(cat "$out_fb" | tail -n +3 | wc -l)
+  ncol=$(sed -n '2{{s/\t/\n/g;p;q}}' "$out_fb" | tail -n +5 | wc -l)
+  echo $fb: "$nrow" rows, "$ncol" columns
 done
 
 get_head () {{
@@ -364,10 +424,13 @@ get_head () {{
     {{print "Header comment different"; exit 1}}' $@
 }}
 
-append_head () {{ sed -i "1s/^/$1\n/" $2 ; }}
+replace_head () {{ sed -i "1 s|^.*$|$1|" $2 ; }}
 
-append_head "$(get_head {input.fb})" {output.fb}
-append_head "$(get_head {input.msp})" {output.msp}
+header_fb="$(get_head {input.fb})"
+header_msp="$(get_head {input.msp})"
+
+replace_head "$header_fb" "$out_fb"
+replace_head "$header_msp" "$out_msp"
 '''
 
 rule Concatenate:

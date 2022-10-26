@@ -8,3 +8,11 @@ sandbox
 .snakemake
 .cache
 .ropeproject
+logs
+intermediate
+*.vcf.gz
+reference_proc
+.ipynb_checkpoints
+BioMe_array-regeneron_GSA.*
+BioMe_array-sema4_GDA.*
+core.*
