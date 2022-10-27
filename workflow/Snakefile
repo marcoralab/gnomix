@@ -1,3 +1,7 @@
+from snakemake.utils import min_version
+min_version("7.0")
+
+
 from snakemake.remote.FTP import RemoteProvider as FTPRemoteProvider
 from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
 
@@ -10,6 +14,9 @@ try:
 except urllib.error.URLError as ex:
     iconnect = False
 
+
+configfile: "config/config.yaml"
+ruleorder: link_imputed > eagle 
 
 class dummyprovider:
     def remote(string_, allow_redirects="foo", immediate_close="bar"):
@@ -25,8 +32,8 @@ else:
 
 BioMe_dir = "/sc/arion/projects/LOAD/Data/BioME/sample_QC/GWASampleFiltering/input/"
 
-DATASETS_all = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA", "NYSCF_array"]
-DATASETS = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA"]
+DATASETS = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA", "NYSCF_array"]
+DATASETS_BioMe = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA"]
 CHROMS = 17
 BUILD = "hg19"
 array = True
@@ -66,6 +73,37 @@ rule NYCSF_binary:
         """
 plink --file {params.ins} --make-bed --out {params.out}
 """
+
+#import ipdb; ipdb.set_trace()
+config_impute = config["imputation"]
+config_impute["directory"] = "intermediate"
+config_impute["SAMPLES"] = ["NYSCF_array"]
+config_impute["out_dir"] = "output/imputation"
+# snakefile_impute = 'modules/imputePipeline/workflow/Snakefile'
+snakefile_impute = github("marcoralab/imputePipeline", path="workflow/Snakefile", tag="v0.4.5")
+
+module imputation:
+    snakefile: snakefile_impute
+    config: config_impute
+
+use rule * from imputation as imputation_*
+
+
+rule link_imputed:
+    input:
+        vcf = "output/imputation/data/by_chrom/NYSCF_array_chr{chrom}_filtered.vcf.gz",
+        tbi = "output/imputation/data/by_chrom/NYSCF_array_chr{chrom}_filtered.vcf.gz.tbi",
+    output:
+        vcf = "intermediate/NYSCF_array_chr{chrom}_phased.vcf.gz",
+        tbi = "intermediate/NYSCF_array_chr{chrom}_phased.vcf.gz.tbi"
+    resources:
+        mem_mb = 100,
+        time_min = 5
+    shell: '''
+ln -rs {input.vcf} {output.vcf}
+ln -rs {input.tbi} {output.tbi}
+'''
+
 
 rule Sample_Flip:
     input:

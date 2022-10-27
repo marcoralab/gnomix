@@ -1,0 +1,65 @@
+imputation:
+  imputation:
+    default:
+      token: eyJjdHkiOiJ0ZXh0XC9wbGFpbiIsImFsZyI6IkhTMjU2In0.eyJuYW1lIjoiU2FyYWggV2VpdHptYW4iLCJhcGkiOnRydWUsIm1haWwiOiJzYXJhaC53ZWl0em1hbkBpY2Fobi5tc3NtLmVkdSIsImV4cGlyZSI6MTY2OTQwODIxNjU2MSwidXNlcm5hbWUiOiJ3ZWl0enMwMSJ9.zQ8QAfNx14PG6TFifxBhmYlVPLdnTmN2Ym13be10ST0
+      refpanel: topmed-r2
+  
+  # Select chromosomes you want to upload
+  #  separate ranges with ":" and listed chromosomes with ","
+  #  You can put both in the same string. Use M for mitochondra
+  # Options are 1:22,X,Y,M
+  chroms: '17'
+  
+  outputs: # Comment out any line with outputs you don't want
+    - stat_report # A report of imputation quality
+    - vcf_bycohort # Bgzipped VCF files for each cohort
+    # - vcf_merged # A bgzipped VCF with all cohorts
+    # - bgen_bycohort # Binary oxford filesets for each cohort
+    # - bgen_merged # A binary oxford fileset with all cohorts
+    # - plink_bycohort # Binary plink filesets for each cohort
+    # - plink_merged # A binary plink fileset with all cohorts
+  
+  # Location of fasta file for flipping and VCFcheck
+  # ImputePrep will also rename choromosomes to match fasta sequences for b38
+  #  and X/Y/MT compatibility
+  ref:
+    /sc/arion/projects/LOAD/shea/data/reference_panels/human_g1k_v37.fasta
+  
+  # Subject and variant level QC thresholds to apply before imputation
+  preqc:
+    hwe: 1e-20
+    #Hardy-Weinberg Equilibrium Cutoff ("false" to skip)
+    #MAF Cutoff ("false" to skip)
+    maf: false
+    #Variant level missingness cutoff
+    geno: 0.05
+    #Subject level missingness cutoff
+    mind: 0.05
+  
+  # variant level QC thresholds to apply after imputation
+  postqc:
+    # MAF Cutoff between common and rare
+    maf: 0.005
+    # Rsq to use with common variants
+    rsq: 0.3
+    # Rsq to use with rare variants (set to NA to use rsq as hard cutoff)
+    rsq2: NA
+    # Number of SNPs of each type (Imputed, Typed) to sample for figures
+    sampsize: 100000
+  
+  # Sample filtering
+  
+  chr_callrate: False
+  chunk_callrate: True
+  
+  # filename of samples to include (plink --keep)
+  include_samp:
+  
+  # filename of samples to exclude (plink --remove)
+  exclude_samp:
+  
+  # --keep accepts a space/tab-delimited text file with
+  # family IDs in the first column and within-family IDs
+  # in the second column, and removes all unlisted samples
+  # from the current analysis. --remove does the same for
+  # all listed samples.
