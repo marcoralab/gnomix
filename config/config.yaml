@@ -1,14 +1,49 @@
+indir: "/sc/arion/projects/LOAD/Data/BioME/sample_QC/GWASampleFiltering/input"
+datasets:
+  # BioMe_array-regeneron_GSA:
+  #    infile: '{indir}/regeneron_GSA_hg19.bed'
+  #    build: hg19
+  #    array: True
+  #    filters: '--chr 17'
+  #    impute: False
+  BioMe_array-sema4_GDA:
+     infile: '{indir}/sema4_GDA_hg19.bed'
+     build: hg19
+     array: True
+     filters: '--chr 17'
+     impute: False
+  NYSCF_array:
+     infile: input/NYSCF_MSSM_Chr17.ped
+     build: hg19
+     array: True
+     filters: ''
+     impute: True
+  test_vcf:
+     infile: input/test.vcf.gz
+     build: hg38
+     array: False
+     filters: ''
+     impute: False
+     phased: False
+  test_vcf_phased:
+     infile: input/test.vcf.gz
+     build: hg38
+     array: False
+     filters: ''
+     impute: False
+     phased: True
+
+chroms: '1:22'
+
 imputation:
   imputation:
     default:
       token: eyJjdHkiOiJ0ZXh0XC9wbGFpbiIsImFsZyI6IkhTMjU2In0.eyJuYW1lIjoiU2FyYWggV2VpdHptYW4iLCJhcGkiOnRydWUsIm1haWwiOiJzYXJhaC53ZWl0em1hbkBpY2Fobi5tc3NtLmVkdSIsImV4cGlyZSI6MTY2OTQwODIxNjU2MSwidXNlcm5hbWUiOiJ3ZWl0enMwMSJ9.zQ8QAfNx14PG6TFifxBhmYlVPLdnTmN2Ym13be10ST0
-      refpanel: topmed-r2
   
   # Select chromosomes you want to upload
   #  separate ranges with ":" and listed chromosomes with ","
   #  You can put both in the same string. Use M for mitochondra
   # Options are 1:22,X,Y,M
-  chroms: '17'
   
   outputs: # Comment out any line with outputs you don't want
     - stat_report # A report of imputation quality
@@ -18,12 +53,6 @@ imputation:
     # - bgen_merged # A binary oxford fileset with all cohorts
     # - plink_bycohort # Binary plink filesets for each cohort
     # - plink_merged # A binary plink fileset with all cohorts
-  
-  # Location of fasta file for flipping and VCFcheck
-  # ImputePrep will also rename choromosomes to match fasta sequences for b38
-  #  and X/Y/MT compatibility
-  ref:
-    /sc/arion/projects/LOAD/shea/data/reference_panels/human_g1k_v37.fasta
   
   # Subject and variant level QC thresholds to apply before imputation
   preqc:

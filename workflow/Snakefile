@@ -1,7 +1,7 @@
 from snakemake.utils import min_version
 min_version("7.0")
 
-
+import re
 from snakemake.remote.FTP import RemoteProvider as FTPRemoteProvider
 from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
 
@@ -16,7 +16,6 @@ except urllib.error.URLError as ex:
 
 
 configfile: "config/config.yaml"
-ruleorder: link_imputed > eagle 
 
 class dummyprovider:
     def remote(string_, allow_redirects="foo", immediate_close="bar"):
@@ -29,14 +28,89 @@ else:
     FTP = dummyprovider
     HTTP = dummyprovider
 
+reporoot = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main" 
 
-BioMe_dir = "/sc/arion/projects/LOAD/Data/BioME/sample_QC/GWASampleFiltering/input/"
+ref_vcf = {"hg19": "reference/1000gRaw.hg19.chr{chrom}.vcf.gz",
+           "hg38": "reference/1000gRaw.GRCh38.chr{chrom}.vcf.gz"}
+ref_fasta = {"hg19": "reference/human_g1k_hg19.fasta",
+             "hg38": "reference/human_g1k_GRCh38.fasta"}
+ref_pops = HTTP.remote(reporoot + "/demo/data/1000g.smap") if iconnect else ''
+ref_name = "1000g"
 
-DATASETS = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA", "NYSCF_array"]
-DATASETS_BioMe = ["BioMe_array-regeneron_GSA", "BioMe_array-sema4_GDA"]
-CHROMS = 17
-BUILD = "hg19"
-array = True
+conf = config['datasets']
+
+def get_build(conf, dataset):
+    if conf[dataset]['impute']:
+        return 'hg38'
+    else:
+        return conf[dataset]['build']
+
+def get_intype(conf, dataset):
+    fname = conf[dataset]['infile']
+    if re.match(r'.+\.vcf(\.gz)*$', fname):
+        return 'vcf'
+    elif re.match(r'.+\.bcf$', fname):
+        return 'bcf'
+    elif re.match(r'.+\.bed$', fname):
+        return 'bplink'
+    elif re.match(r'.+\.ped$', fname):
+        return 'plink'
+    else:
+        raise Exception('Unrecognized file type')
+
+def get_in(conf, dataset):
+    fname = conf[dataset]['infile']
+    fname = fname.format(indir=config['indir']) #allow
+    intype = get_intype(conf, dataset)
+    if intype in ['plink', 'bplink']:
+        return fname[0:-4]
+    else:
+        return fname
+
+def parse_chrom(chrs):
+    clist = [x.split(":") for x in chrs.split(",")]
+    parsed = []
+    for chrs in clist:
+        if len(chrs) == 2:
+            chrs = [str(c) for c in range(int(chrs[0]), int(chrs[1]) + 1)]
+        elif len(chrs) != 1:
+            raise ValueError("Invalid chromosome list.")
+        parsed += chrs
+    return parsed
+
+
+if 'chroms' not in config:
+    CHROMS = parse_chrom('1:22')
+else:
+    CHROMS = parse_chrom(config['chroms'])
+
+DATASETS = [x for x in conf.keys()]
+BUILD = [get_build(conf, x) for x in DATASETS] # hg19 or hg38
+array = [conf[x]['array'] for x in DATASETS]
+filter_dict = {x: conf[x]['filters'] for x in DATASETS}
+input_type_dict = {x: get_intype(conf, x) for x in DATASETS}
+input_dict = {x: get_in(conf, x) for x in DATASETS}
+impute_datasets = [x for x in DATASETS if conf[x].get('impute', False)]
+impute_build = [conf[x]['build'] for x in DATASETS if conf[x].get('impute', False)]
+assert len(set(impute_build)) == 1, "There can only be one build for imputation"
+impute_build = impute_build[0]
+assert impute_build in ['hg19', 'hg38']
+impute_fasta = ref_fasta[impute_build]
+
+gconfig = [reporoot + "/configs/" + ("config_array.yaml" if x else "config.yaml")
+           for x in array]
+confstem = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main/configs"
+gconfig_dict = {
+  k: HTTP.remote(reporoot + "/configs/config_array.yaml") if iconnect else ''
+  for k, v in zip(DATASETS, array)}
+
+def dict_settings(setting):
+    return {k: v for k, v in zip(DATASETS, setting)}
+
+build_dict = dict_settings(BUILD)
+
+wildcard_constraints:
+    build='hg(19|38)'
 
 rule all:
     input:
@@ -44,43 +118,77 @@ rule all:
         #expand('output/{dataset}_chr{chrom}/{dataset}_chr{chrom}.vcf.gz',
         #       dataset=DATASETS, chrom=CHROMS)
 
-rule biome_filter:
-    input: multiext(BioMe_dir + "{bmcenter}_hg19", ".bed", ".bim", ".fam")
-    output: multiext("intermediate/BioMe_array-{bmcenter}", ".bed", ".bim", ".fam")
+def get_intype(wc):
+    intype_ =  wc['inputtype']
+    if intype_ == 'bplink':
+        return 'bfile'
+    elif intype_ == 'plink':
+        return 'file'
+    else:
+        raise Exception('Invalid input type')
+
+def get_infile(wc):
+    intype_ = wc['inputtype']
+    stem = input_dict[wc['dataset']]
+    if intype_ == 'bplink':
+        return multiext(stem, ".bed", ".bim", ".fam")
+    elif intype_ == 'plink':
+        return multiext(stem, ".ped", ".map")
+    else:
+        raise Exception('Invalid input type')
+
+rule plink_filter:
+    input: get_infile
+    output: temp(multiext("intermediate/start/{dataset}.{build}.from{inputtype}", ".bed", ".bim", ".fam"))
     params:
-        ins = BioMe_dir + "{bmcenter}_hg19",
-        out = "intermediate/BioMe_array-{bmcenter}"
+        ins = lambda wc: input_dict[wc['dataset']],
+        out = "intermediate/start/{dataset}.{build}.from{inputtype}",
+        filt = lambda wc: filter_dict[wc['dataset']],
+        ftype = get_intype
     resources:
         mem_mb = 10000,
         time_min = 30
     conda: "envs/plink.yaml"
     shell:
         """
-plink --bfile {params.ins} --chr 17 --make-bed --out {params.out}
+plink --{params.ftype} {params.ins} {params.filt} --make-bed --out {params.out}
 """
 
-rule NYCSF_binary:
-    input: multiext("input/NYSCF_MSSM_Chr17", ".ped", ".map")
-    output: multiext("intermediate/NYSCF_array", ".bed", ".bim", ".fam")
-    params:
-        ins = "input/NYSCF_MSSM_Chr17",
-        out = "intermediate/NYSCF_array"
+def preimpute_files(wc):
+    ds = wc['dataset']
+    intype = input_type_dict[ds]
+    stem = expand("intermediate/start/{dataset}.{build}.from{inputtype}",
+        inputtype=intype, build=impute_build, dataset=ds)[0]
+    return {x: stem + '.' + x for x in ['bed', 'bim', 'fam']}
+
+rule link_impute:
+    input: unpack(preimpute_files)
+    output:
+        bed = "intermediate/impute_start/{dataset}.bed",
+        bim = "intermediate/impute_start/{dataset}.bim",
+        fam = "intermediate/impute_start/{dataset}.fam"
     resources:
-        mem_mb = 10000,
+        mem_mb = 100,
         time_min = 30
-    conda: "envs/plink.yaml"
     shell:
-        """
-plink --file {params.ins} --make-bed --out {params.out}
-"""
+        '''
+cp {input.bed} {output.bed}
+cp {input.bim} {output.bim}
+cp {input.fam} {output.fam}
+'''
+    
 
 #import ipdb; ipdb.set_trace()
 config_impute = config["imputation"]
-config_impute["directory"] = "intermediate"
-config_impute["SAMPLES"] = ["NYSCF_array"]
+config_impute["chroms"] = config["chroms"]
+config_impute["directory"] = "intermediate/impute_start/"
+config_impute["SAMPLES"] = impute_datasets
 config_impute["out_dir"] = "output/imputation"
+config_impute['ref'] = impute_fasta
+config_impute['imputation']['default']['build'] = impute_build
+config_impute['imputation']['default']['refpanel'] = 'topmed-r2'
 # snakefile_impute = 'modules/imputePipeline/workflow/Snakefile'
-snakefile_impute = github("marcoralab/imputePipeline", path="workflow/Snakefile", tag="v0.4.5")
+snakefile_impute = github("marcoralab/imputePipeline", path="workflow/Snakefile", tag="v0.4.10")
 
 module imputation:
     snakefile: snakefile_impute
@@ -89,32 +197,16 @@ module imputation:
 use rule * from imputation as imputation_*
 
 
-rule link_imputed:
-    input:
-        vcf = "output/imputation/data/by_chrom/NYSCF_array_chr{chrom}_filtered.vcf.gz",
-        tbi = "output/imputation/data/by_chrom/NYSCF_array_chr{chrom}_filtered.vcf.gz.tbi",
-    output:
-        vcf = "intermediate/NYSCF_array_chr{chrom}_phased.vcf.gz",
-        tbi = "intermediate/NYSCF_array_chr{chrom}_phased.vcf.gz.tbi"
-    resources:
-        mem_mb = 100,
-        time_min = 5
-    shell: '''
-ln -rs {input.vcf} {output.vcf}
-ln -rs {input.tbi} {output.tbi}
-'''
-
-
 rule Sample_Flip:
     input:
-        bim = "intermediate/{dataset}" + '.bim',
-        bed = "intermediate/{dataset}" + '.bed',
-        fam = "intermediate/{dataset}" + '.fam',
-        fasta = expand("reference/human_g1k_{gbuild}.fasta", gbuild=BUILD)
+        bim = "intermediate/start/{dataset}.{build}.from{inputtype}" + '.bim',
+        bed = "intermediate/start/{dataset}.{build}.from{inputtype}" + '.bed',
+        fam = "intermediate/start/{dataset}.{build}.from{inputtype}" + '.fam',
+        fasta = lambda wc: ref_fasta[wc["build"]]
     output:
-        multiext("intermediate/{dataset}_flipped", ".bim", ".bed", ".fam")
+        temp(multiext("intermediate/{dataset}.{build}.from{inputtype}_flipped", ".bim", ".bed", ".fam"))
     params:
-        stem = "intermediate/{dataset}"
+        stem = "intermediate/{dataset}.{build}.from{inputtype}"
     resources:
         mem_mb = 10000,
         time_min = 30
@@ -123,10 +215,10 @@ rule Sample_Flip:
 
 rule Sample_ChromPosRefAlt:
     input:
-        flipped = "intermediate/{dataset}_flipped.bim"
+        flipped = "intermediate/{dataset}.{build}.from{inputtype}_flipped.bim"
     output:
-        bim = temp("intermediate/{dataset}_flipped_ChromPos.bim"),
-        snplist = temp("intermediate/{dataset}_flipped_snplist")
+        bim = temp("intermediate/{dataset}.{build}.from{inputtype}_flipped_ChromPos.bim"),
+        snplist = temp("intermediate/{dataset}.{build}.from{inputtype}_flipped_snplist")
     threads: 2
     resources:
         mem_mb = 8000,
@@ -135,14 +227,14 @@ rule Sample_ChromPosRefAlt:
     script: 'scripts/bim_ChromPosRefAlt.R'
 
 # Recode sample plink file to vcf
-rule vcf:
+rule plink_vcf:
     input:
-        bed = "intermediate/{dataset}_flipped.bed",
-        bim = "intermediate/{dataset}_flipped_ChromPos.bim",
-        fam = "intermediate/{dataset}_flipped.fam"
-    output: "intermediate/{dataset}.vcf.gz"
+        bed = "intermediate/{dataset}.{build}.from{inputtype}_flipped.bed",
+        bim = "intermediate/{dataset}.{build}.from{inputtype}_flipped_ChromPos.bim",
+        fam = "intermediate/{dataset}.{build}.from{inputtype}_flipped.fam"
+    output: temp("intermediate/{dataset}.{build}.from{inputtype}.vcf.gz")
     params:
-        out = "intermediate/{dataset}"
+        out = "intermediate/{dataset}.{build}.from{inputtype}"
     resources:
         mem_mb = 10000,
         time_min = 30
@@ -153,23 +245,114 @@ plink --bed {input.bed} --bim {input.bim} --fam {input.fam} --recode vcf bgz \
   --real-ref-alleles --out {params.out}
 '''
 
+def choose_vcf_initial(wc):
+    ds = wc['dataset']
+    intype = input_type_dict[ds]
+    if conf[ds].get('impute', False):
+        raise Exception("Phasing not needed after imputation")
+    # elif conf[ds].get('phased', False):
+    #     raise Exception("Phasing not needed")
+    elif intype == 'bcf':
+        raise Exception("BCF not yet supported")
+    elif intype == 'vcf':
+        return conf[ds]['infile']
+    else:
+        return expand("intermediate/{{dataset}}.{{build}}.from{inputtype}.vcf.gz",
+            inputtype = intype)
 
-rule idx_vcf:
-    input: "intermediate/{dataset}.vcf.gz"
-    output: "intermediate/{dataset}.vcf.gz.tbi"
+def choose_filter_vcf_initial(wc):
+    ds = wc['dataset']
+    intype = input_type_dict[ds]
+    if conf[ds].get('impute', False):
+        raise Exception("Phasing not needed after imputation")
+    # elif conf[ds].get('phased', False):
+    #     raise Exception("Phasing not needed")
+    elif intype == 'bcf':
+        raise Exception("BCF not yet supported")
+    elif intype == 'vcf':
+        return filter_dict[ds]
+    else:
+        return ''
+
+rule vcf:
+    input: choose_vcf_initial
+    output:
+        vcf = temp("intermediate/{dataset}.{build}.allchrom.vcf.gz"),
+        tbi = "intermediate/{dataset}.{build}.allchrom.vcf.gz.tbi"
+    params:
+        filt = choose_filter_vcf_initial
     conda: "envs/bcftools.yaml"
     threads: 1
     resources:
         mem_mb = 4000,
-        time_min = 30
-    shell: "bcftools index -t {input}"
+        time_min = 120
+    shell: '''
+filt="{params.filt}"
+if [[ -z "${{filt// }}" ]]; then
+  cp {input} {output.vcf}
+else
+  bcftools view {params.filt} -Oz -o {output.vcf} {input}
+fi
+bcftools index -t {output.vcf}
+'''
+
+rule vcf_split:
+    input:
+        vcf = rules.vcf.output.vcf,
+        tbi = rules.vcf.output.tbi
+    output:
+        vcf = temp("intermediate/{dataset}.{build}.chr{chrom}.pipesplit.vcf.gz"),
+        tbi = "intermediate/{dataset}.{build}.chr{chrom}.pipesplit.vcf.gz.tbi"
+    conda: "envs/bcftools.yaml"
+    threads: 1
+    resources:
+        mem_mb = 4000,
+        time_min = 120
+    shell: '''
+bcftools view -r {wildcards.chrom} -Oz -o {output.vcf} {input.vcf}
+bcftools index -t {output.vcf}
+'''
+
+rule vcf_presplit:
+    input: choose_vcf_initial
+    output:
+        vcf = temp("intermediate/{dataset}.{build}.chr{chrom}.perchrom.vcf.gz"),
+        tbi = "intermediate/{dataset}.{build}.chr{chrom}.perchrom.vcf.gz.tbi"
+    params:
+        filt = lambda wc: filter_dict[wc['dataset']],
+    conda: "envs/bcftools.yaml"
+    threads: 1
+    resources:
+        mem_mb = 4000,
+        time_min = 120
+    shell: '''
+filt="{params.filt}"
+if [[ -z "${{filt// }}" ]]; then
+  ln -rs {input} {output.vcf}
+else
+  bcftools view {params.filt} -Oz -o {output.vcf} {input}
+fi
+bcftools index -t {output.vcf}
+'''
+
+def choose_vcf_general(wc):
+    ds = wc['dataset']
+    intype = input_type_dict[ds]
+    #import ipdb; ipdb.set_trace()
+    if intype == 'vcf' and re.match(r'.+\{chrom\}', conf[ds]['infile']):
+        return rules.vcf_presplit.output.vcf
+    else:
+        return rules.vcf_split.output.vcf
+
+def choose_tbi_general(wc):
+    return choose_vcf_general(wc) + '.tbi'
 
 rule bcf:
     input:
-        vcf = "intermediate/{dataset}.vcf.gz",
-        tbi = "intermediate/{dataset}.vcf.gz.tbi",
-        fasta = "reference/human_g1k_{build}.fasta"
-    output: "intermediate/{dataset}_chr{chrom}.{build}.bcf"
+        vcf = choose_vcf_general,
+        tbi = choose_tbi_general,
+        fasta = lambda wc: ref_fasta[wc["build"]]
+    output: "intermediate/{dataset}.{build}.chr{chrom}.bcf"
     conda: "envs/bcftools.yaml"
     threads: 1
     resources:
@@ -177,16 +360,15 @@ rule bcf:
         time_min = 30
     shell:
         """
-bcftools view -r {wildcards.chrom} {input.vcf} | \
-  bcftools norm -Ob -o {output} -d none -f {input.fasta} && \
+bcftools norm -Ob -o {output} -d none -f {input.fasta} {input.vcf} && \
 bcftools index {output}
 """
 
-rule makeref_tg:
+rule makeref:
     input:
-        vcf = "reference/1000gRaw.{build}.chr{chrom}.vcf.gz",
-        fasta = "reference/human_g1k_{build}.fasta"
-    output: "reference_proc/1000g.{build}.chr{chrom}.bcf"
+        vcf = lambda wc: ref_vcf[wc["build"]], 
+        fasta = lambda wc: ref_fasta[wc["build"]]
+    output: "reference_proc/{refname}.{build}.chr{chrom}.bcf"
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
@@ -200,11 +382,22 @@ bcftools view -Ou -c 2 {input.vcf} | \
  bcftools index -f {output}
 '''
 
+def choose_vcf_ref(wc):
+    ds = wc['dataset']
+    intype = input_type_dict[ds]
+    if conf[ds].get('phased', False):
+        assert intype == 'vcf', 'plink files cannot be phased and bcf files are not yet supported'
+        return conf[ds]['infile']
+    elif intype == 'vcf' and re.match(r'.+\{chrom\}', conf[ds]['infile']):
+        return rules.vcf_presplit.output.vcf
+    else:
+        return rules.vcf.output.vcf
+
 rule filter_ref:
     input:
-      ref = rules.makeref_tg.output,
-      samp = rules.vcf.output
-    output: "reference_proc/1000g.{build}.chr{chrom}.filtered_{dataset}.vcf.gz"
+      ref = rules.makeref.output,
+      samp = choose_vcf_ref
+    output: "reference_proc/{refname}.{build}.chr{chrom}.filtered_{dataset}.vcf.gz"
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
@@ -218,12 +411,12 @@ bcftools index -f {output}
 
 rule eagle:
     input:
-        target = expand("intermediate/{{dataset}}_chr{{chrom}}.{build}.bcf", build=BUILD),
-        ref = expand("reference_proc/1000g.{build}.chr{{chrom}}.bcf", build=BUILD)
-    output: "intermediate/{dataset}_chr{chrom}_phased.vcf.gz"
+        target = rules.bcf.output,
+        ref = expand("reference_proc/{refname}.{{build}}.chr{{chrom}}.bcf", refname=ref_name)
+    output: "intermediate/{dataset}.{build}.chr{chrom}.phased.vcf.gz"
     params:
-        outstem = "intermediate/{dataset}_chr{chrom}_phased"
-    log: "logs/{dataset}_chr{chrom}.eagle.log"
+        outstem = "intermediate/{dataset}.{build}.chr{chrom}.phased"
+    log: "logs/{dataset}_{build}_chr{chrom}.eagle.log"
     threads: 10
     resources:
         mem_mb = 4000,
@@ -232,14 +425,14 @@ rule eagle:
     shell:
         '''
 eagle --vcfTarget={input.target} --vcfRef={input.ref} \
-  --geneticMapFile=/tables/genetic_map_hg19_withX.txt.gz \
+  --geneticMapFile=/tables/genetic_map_{wildcards.build}_withX.txt.gz \
   --outPrefix={params.outstem} --numThreads=10 --vcfOutFormat=z \
   2>&1 | tee {log}
 '''
 
 rule geneticMapGnomix:
-    input: HTTP.remote("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_hg19_withX.txt.gz") if iconnect else ''
-    output: "reference_proc/genetic_map_hg19_withX.gmap"
+    input: HTTP.remote("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_{build}_withX.txt.gz") if iconnect else ''
+    output: "reference_proc/genetic_map_{build}_withX.gmap"
     resources:
         mem_mb = 1000,
         time_min = 30
@@ -250,15 +443,30 @@ zcat {input} | \
   > {output}
 '''
 
-reporoot = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main" 
-confstem = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main/configs"
-if array:
-    gconfig = HTTP.remote(reporoot + "/configs/config_array.yaml") if iconnect else ''
-else:
-    gconfig = HTTP.remote(reporoot + "/configs/config.yaml") if iconnect else ''
+def choose_vcf_gnomix(wc):
+    ds = wc['dataset']
+    intype = input_type_dict[ds]
+    if conf[ds].get('impute', False):
+        assert input_type_dict[ds] != 'vcf', 'cannot impute vcf yet'
+        return 'output/imputation/data/by_chrom/{dataset}_chr{chrom}_filtered.vcf.gz',
+    elif conf[ds].get('phased', False):
+        assert intype == 'vcf', 'plink files cannot be phased and bcf files are not yet supported'
+        return choose_vcf_general(wc)
+    else:
+        return "intermediate/{dataset}.{build}.chr{chrom}.phased.vcf.gz"
+    
+rule vcf_gnomix:
+    input: choose_vcf_gnomix
+    output: temp("intermediate/{dataset}.{build}.chr{chrom}.forgnomix.vcf.gz"),
+    resources:
+        mem_mb = 100,
+        time_min = 5
+    shell: '''
+cp {input} {output}
+'''
 
 rule sample_list:
-    input: expand("intermediate/{{dataset}}_chr{chrom}_phased.vcf.gz", chrom=CHROMS)
+    input: lambda wc: expand("intermediate/{{dataset}}.{build}.chr{chrom}.forgnomix.vcf.gz", chrom=CHROMS, build=build_dict[wc["dataset"]])
     output: "intermediate/sample_lists/{dataset}_all.txt",
     conda: "envs/bcftools.yaml"
     threads: 1
@@ -283,8 +491,8 @@ rule splits:
         sample_list = "intermediate/sample_lists/split_{dataset}/split.{chunk}",
         vcf = rules.eagle.output
     output:
-        vcf = temp("intermediate/{dataset}_chr{chrom}_phased.{chunk}.vcf.gz"),
-        tbi = temp("intermediate/{dataset}_chr{chrom}_phased.{chunk}.vcf.gz.tbi"),
+        vcf = temp("intermediate/{dataset}.{build}.chr{chrom}.chunk{chunk}.vcf.gz"),
+        tbi = temp("intermediate/{dataset}.{build}.chr{chrom}.chunk{chunk}.vcf.gz.tbi"),
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
@@ -299,11 +507,11 @@ bcftools index -tf {output.vcf}
 rule vcf_model_fit:
     input:
         sample_list = rules.sample_list.output,
-        vcf = rules.eagle.output
+        vcf = rules.vcf_gnomix.output
     output:
-        sample_list = temp("intermediate/{dataset}_chr{chrom}_phased_modelfit.samples"),
-        vcf = temp("intermediate/{dataset}_chr{chrom}_phased_modelfit.vcf.gz"),
-        tbi = temp("intermediate/{dataset}_chr{chrom}_phased_modelfit.vcf.gz.tbi"),
+        sample_list = temp("intermediate/{dataset}.{build}.chr{chrom}.modelfit.samples"),
+        vcf = temp("intermediate/{dataset}.{build}.chr{chrom}.modelfit.vcf.gz"),
+        tbi = temp("intermediate/{dataset}.{build}.chr{chrom}.modelfit.vcf.gz.tbi"),
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
@@ -318,15 +526,15 @@ bcftools index -tf {output.vcf}
 
 rule gnomix_model:
     input:
-        query = "intermediate/{dataset}_chr{chrom}_phased_modelfit.vcf.gz",
+        query = "intermediate/{dataset}.{build}.chr{chrom}.modelfit.vcf.gz",
         genetic_map = rules.geneticMapGnomix.output,
-        reference = expand("reference_proc/1000g.{build}.chr{{chrom}}.filtered_{{dataset}}.vcf.gz", build=BUILD),
-        sample_map = HTTP.remote(reporoot + "/demo/data/1000g.smap") if iconnect else '',
-        config = gconfig
+        reference = expand("reference_proc/{refname}.{{build}}.chr{{chrom}}.filtered_{{dataset}}.vcf.gz", refname=ref_name),
+        sample_map = ref_pops,
+        config = lambda wc: gconfig_dict[wc["dataset"]]
     output:
-        'output/models/{dataset}_chr{chrom}/models/model_chm_{chrom}/model_chm_{chrom}.pkl'
+        'output/models/{dataset}_{build}_chr{chrom}/models/model_chm_{chrom}/model_chm_{chrom}.pkl'
     params:
-        output_folder = 'output/models/{dataset}_chr{chrom}',
+        output_folder = 'output/models/{dataset}_{build}_chr{chrom}',
         phase = 'False', #True or False
     threads: 40
     resources:
@@ -341,11 +549,12 @@ python3 /gnomix/gnomix.py {input.query} {params.output_folder} \
   {input.config}
 '''
 
-gchunkdir = 'output/chunked/{dataset}_chr{chrom}_chunk{chunk}'
+gchunkdir = 'output/chunked/{dataset}_{build}_chr{chrom}_chunk{chunk}'
 
 rule gnomix:
     input:
-        query = "intermediate/{dataset}_chr{chrom}_phased.{chunk}.vcf.gz",
+        query = rules.splits.output.vcf,
+        tbi = rules.splits.output.tbi,
         model = rules.gnomix_model.output
     output:
         vcf = temp(gchunkdir + '/query_file_phased.vcf'),
@@ -381,7 +590,7 @@ bcftools view -Oz -o {output.vcf} {input}
 bcftools index -tf {output.vcf}
 '''
 
-gchunkdirp = 'output/chunked/{{dataset}}_chr{{chrom}}_chunk{chunk}'
+gchunkdirp = 'output/chunked/{{dataset}}_{{build}}_chr{{chrom}}_chunk{chunk}'
 
 def aggregate(wildcards, fname):
     #import ipdb; ipdb.set_trace()
@@ -395,18 +604,18 @@ def aggregate(wildcards, fname):
     # return ins
     return expand(gchunkdirp + fname, chunk=chunks)
 
-rule merge_gnomad:
+rule merge_gnomix:
     input:
         vcf = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz'),
         tbi = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz.tbi'), 
         fb = lambda wc: aggregate(wc, '/query_results.fb'), 
         msp = lambda wc: aggregate(wc, '/query_results.msp') 
     output:
-        vcf = 'output/merged/{dataset}_chr{chrom}.vcf.gz',
-        tbi = 'output/merged/{dataset}_chr{chrom}.vcf.gz.tbi',
-        msp = 'output/merged/{dataset}_chr{chrom}.msp',
-        fb = 'output/merged/{dataset}_chr{chrom}.fb',
-        tmp = temp('output/merged/{dataset}_chr{chrom}.tmp')
+        vcf = 'output/merged/{dataset}_{build}_chr{chrom}.vcf.gz',
+        tbi = 'output/merged/{dataset}_{build}_chr{chrom}.vcf.gz.tbi',
+        msp = 'output/merged/{dataset}_{build}_chr{chrom}.msp',
+        fb = 'output/merged/{dataset}_{build}_chr{chrom}.fb',
+        tmp = temp('output/merged/{dataset}_{build}_chr{chrom}.tmp')
     threads: 2
     resources:
         mem_mb = 4000,
@@ -473,11 +682,11 @@ replace_head "$header_msp" "$out_msp"
 
 rule Concatenate:
     input:
-        vcf = expand('output/merged/{{dataset}}_chr{chrom}.vcf.gz', chrom=CHROMS),
-        tbi = expand('output/merged/{{dataset}}_chr{chrom}.vcf.gz.tbi', chrom=CHROMS),
+        vcf = expand('output/merged/{{dataset}}_{{build}}_chr{chrom}.vcf.gz', chrom=CHROMS),
+        tbi = expand('output/merged/{{dataset}}_{{build}}_chr{chrom}.vcf.gz.tbi', chrom=CHROMS),
     output:
-        vcf = 'output/{dataset}_chrall.vcf.gz',
-        tbi = 'output/{dataset}_chrall.vcf.gz.tbi'
+        vcf = 'output/{dataset}_{build}_chrall.vcf.gz',
+        tbi = 'output/{dataset}_{build}_chrall.vcf.gz.tbi'
     threads: 4
     resources:
         mem_mb = 4000,
@@ -491,8 +700,8 @@ bcftools index -tf {output.vcf}
 
 rule Merge:
     input:
-        vcf = expand('output/{dataset}_chrall.vcf.gz', dataset=DATASETS),
-        tbi = expand('output/{dataset}_chrall.vcf.gz.tbi', dataset=DATASETS)
+        vcf = expand('output/{dataset}_{build}_chrall.vcf.gz', zip, dataset=DATASETS, build=BUILD),
+        tbi = expand('output/{dataset}_{build}_chrall.vcf.gz.tbi', zip, dataset=DATASETS, build=BUILD)
     output:
         vcf = "output/merged.vcf.gz",
         tbi = "output/merged.vcf.gz.tbi"
