@@ -28,26 +28,28 @@ else:
     FTP = dummyprovider
     HTTP = dummyprovider
 
-reporoot = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main" 
+#import ipdb; ipdb.set_trace()
+
+reporoot = "raw.githubusercontent.com/AI-sandbox/gnomix/main" 
 
 ref_vcf = {"hg19": "reference/1000gRaw.hg19.chr{chrom}.vcf.gz",
-           "hg38": "reference/1000gRaw.GRCh38.chr{chrom}.vcf.gz"}
+           "hg38": "/sc/arion/scratch/gargp01/ToShare/1000Genomes_HGDP_Phased_VCFs/hgdp.tgp.gwaspy.merged.chr{chrom}.merged.cleaned.vcf.gz"} # "reference/1000gRaw.GRCh38.chr{chrom}.vcf.gz"}
 ref_fasta = {"hg19": "reference/human_g1k_hg19.fasta",
              "hg38": "reference/human_g1k_GRCh38.fasta"}
-ref_pops = HTTP.remote(reporoot + "/demo/data/1000g.smap") if iconnect else ''
+ref_pops = 'reference_proc/hgdp_1kg.smap' # HTTP.remote(reporoot + "/demo/data/1000g.smap") if iconnect else ''
 ref_name = "1000g"
 
 conf = config['datasets']
 
 def get_build(conf, dataset):
-    if conf[dataset]['impute']:
+    if conf[dataset].get('impute', False):
         return 'hg38'
     else:
         return conf[dataset]['build']
 
 def get_intype(conf, dataset):
     fname = conf[dataset]['infile']
-    if re.match(r'.+\.vcf(\.gz)*$', fname):
+    if re.match(r'.+\.vcf(\.b{0,1}gz)*$', fname):
         return 'vcf'
     elif re.match(r'.+\.bcf$', fname):
         return 'bcf'
@@ -60,7 +62,7 @@ def get_intype(conf, dataset):
 
 def get_in(conf, dataset):
     fname = conf[dataset]['infile']
-    fname = fname.format(indir=config['indir']) #allow
+    fname = fname.format(indir=config['indir'], chrom='{chrom}') #allow
     intype = get_intype(conf, dataset)
     if intype in ['plink', 'bplink']:
         return fname[0:-4]
@@ -87,22 +89,23 @@ else:
 DATASETS = [x for x in conf.keys()]
 BUILD = [get_build(conf, x) for x in DATASETS] # hg19 or hg38
 array = [conf[x]['array'] for x in DATASETS]
-filter_dict = {x: conf[x]['filters'] for x in DATASETS}
+filter_dict = {x: conf[x].get('filters', '') for x in DATASETS}
 input_type_dict = {x: get_intype(conf, x) for x in DATASETS}
 input_dict = {x: get_in(conf, x) for x in DATASETS}
 impute_datasets = [x for x in DATASETS if conf[x].get('impute', False)]
 impute_build = [conf[x]['build'] for x in DATASETS if conf[x].get('impute', False)]
-assert len(set(impute_build)) == 1, "There can only be one build for imputation"
-impute_build = impute_build[0]
-assert impute_build in ['hg19', 'hg38']
+if len(impute_build) > 0:
+    assert len(set(impute_build)) == 1, "There can only be one build for imputation"
+    impute_build = impute_build[0]
+    assert impute_build in ['hg19', 'hg38']
+else:
+    impute_build = 'hg19'
 impute_fasta = ref_fasta[impute_build]
 
-gconfig = [reporoot + "/configs/" + ("config_array.yaml" if x else "config.yaml")
-           for x in array]
-confstem = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main/configs"
-gconfig_dict = {
-  k: HTTP.remote(reporoot + "/configs/config_array.yaml") if iconnect else ''
-  for k, v in zip(DATASETS, array)}
+gconfig_filename_dict = {
+  k: ("config_array.yaml" if v else "config.yaml") for k, v in zip(DATASETS, array)}
+gconfig_local_dict = {
+  k: f'intermediate/configs/{v}' for k, v in gconfig_filename_dict.items()}
 
 def dict_settings(setting):
     return {k: v for k, v in zip(DATASETS, setting)}
@@ -178,7 +181,6 @@ cp {input.fam} {output.fam}
 '''
     
 
-#import ipdb; ipdb.set_trace()
 config_impute = config["imputation"]
 config_impute["chroms"] = config["chroms"]
 config_impute["directory"] = "intermediate/impute_start/"
@@ -309,7 +311,8 @@ rule vcf_split:
         mem_mb = 4000,
         time_min = 120
     shell: '''
-bcftools view -r {wildcards.chrom} -Oz -o {output.vcf} {input.vcf}
+bcftools view -r {wildcards.chrom} -Oz -o {output.vcf} {input.vcf} && \
+sleep 5 && \
 bcftools index -t {output.vcf}
 '''
 
@@ -338,7 +341,6 @@ bcftools index -t {output.vcf}
 def choose_vcf_general(wc):
     ds = wc['dataset']
     intype = input_type_dict[ds]
-    #import ipdb; ipdb.set_trace()
     if intype == 'vcf' and re.match(r'.+\{chrom\}', conf[ds]['infile']):
         return rules.vcf_presplit.output.vcf
     else:
@@ -357,7 +359,7 @@ rule bcf:
     threads: 1
     resources:
         mem_mb = 4000,
-        time_min = 30
+        time_min = 360
     shell:
         """
 bcftools norm -Ob -o {output} -d none -f {input.fasta} {input.vcf} && \
@@ -373,7 +375,7 @@ rule makeref:
     threads: 4
     resources:
         mem_mb = 4000,
-        time_min = 30
+        time_min = 60
     shell:
         '''
 bcftools view -Ou -c 2 {input.vcf} | \
@@ -402,7 +404,7 @@ rule filter_ref:
     threads: 4
     resources:
         mem_mb = 4000,
-        time_min = 30
+        walltime = '96:00'
     shell:
         '''
 bcftools view --regions-file {input.samp} -Oz -o {output} {input.ref}
@@ -417,16 +419,16 @@ rule eagle:
     params:
         outstem = "intermediate/{dataset}.{build}.chr{chrom}.phased"
     log: "logs/{dataset}_{build}_chr{chrom}.eagle.log"
-    threads: 10
+    threads: 20
     resources:
         mem_mb = 4000,
-        walltime = '4:00'
+        walltime = '96:00'
     container: 'docker://befh/eagle:v2.4.1'
     shell:
         '''
 eagle --vcfTarget={input.target} --vcfRef={input.ref} \
   --geneticMapFile=/tables/genetic_map_{wildcards.build}_withX.txt.gz \
-  --outPrefix={params.outstem} --numThreads=10 --vcfOutFormat=z \
+  --outPrefix={params.outstem} --numThreads={threads} --vcfOutFormat=z \
   2>&1 | tee {log}
 '''
 
@@ -459,8 +461,8 @@ rule vcf_gnomix:
     input: choose_vcf_gnomix
     output: temp("intermediate/{dataset}.{build}.chr{chrom}.forgnomix.vcf.gz"),
     resources:
-        mem_mb = 100,
-        time_min = 5
+        mem_mb = 4000,
+        time_min = 30
     shell: '''
 cp {input} {output}
 '''
@@ -524,13 +526,37 @@ bcftools view --samples-file {output.sample_list} -Oz -o {output.vcf} {input.vcf
 bcftools index -tf {output.vcf}
 '''
 
+#import ipdb; ipdb.set_trace()
+
+rule download_config:
+    input: HTTP.remote(f'{reporoot}/configs/{{conf}}.yaml') if iconnect else f'{reporoot}/configs/{{conf}}.yaml'
+    output: 'intermediate/configs/{conf}.yaml'
+    threads: 1
+    resources:
+        mem_mb = 4000,
+        time_min = 5
+    shell: 'cp {input} {output}'
+
+
+rule process_smap_1kg_hgdp:
+    input: HTTP.remote("storage.googleapis.com/gcp-public-data--gnomad/release/3.1.2/vcf/genomes/gnomad.genomes.v3.1.2.hgdp_1kg_subset_sample_meta.tsv.bgz")
+    output:
+        table = "reference_proc/hgdp_1kg.popdata.tsv.gz",
+        smap = "reference_proc/hgdp_1kg.smap"
+    threads: 1
+    resources:
+        mem_mb = 16000,
+        time_min = 20
+    script: 'scripts/rule_process_smap_1kg_hgdp.R' 
+
+
 rule gnomix_model:
     input:
         query = "intermediate/{dataset}.{build}.chr{chrom}.modelfit.vcf.gz",
         genetic_map = rules.geneticMapGnomix.output,
         reference = expand("reference_proc/{refname}.{{build}}.chr{{chrom}}.filtered_{{dataset}}.vcf.gz", refname=ref_name),
-        sample_map = ref_pops,
-        config = lambda wc: gconfig_dict[wc["dataset"]]
+        sample_map =  ref_pops,
+        config = lambda wc: gconfig_local_dict[wc["dataset"]]
     output:
         'output/models/{dataset}_{build}_chr{chrom}/models/model_chm_{chrom}/model_chm_{chrom}.pkl'
     params:
@@ -582,7 +608,7 @@ rule Compress:
     threads: 2
     resources:
         mem_mb = 4000,
-        walltime = '4:00'
+        walltime = '24:00'
     conda: "envs/bcftools.yaml"
     shell:
         '''
@@ -593,7 +619,6 @@ bcftools index -tf {output.vcf}
 gchunkdirp = 'output/chunked/{{dataset}}_{{build}}_chr{{chrom}}_chunk{chunk}'
 
 def aggregate(wildcards, fname):
-    #import ipdb; ipdb.set_trace()
     checkpoint_output = checkpoints.sample_list_split.get(**wildcards).output[0]
     chunks = glob_wildcards(checkpoint_output + "/split.{chunk}").chunk
     # ins = {
@@ -619,7 +644,7 @@ rule merge_gnomix:
     threads: 2
     resources:
         mem_mb = 4000,
-        walltime = '4:00'
+        walltime = '24:00'
     conda: "envs/gnomad_merge.yaml"
     shell:
         r'''
@@ -690,7 +715,7 @@ rule Concatenate:
     threads: 4
     resources:
         mem_mb = 4000,
-        walltime = '4:00'
+        walltime = '24:00'
     conda: "envs/bcftools.yaml"
     shell:
         r'''
@@ -708,7 +733,7 @@ rule Merge:
     threads: 4
     resources:
         mem_mb = 4000,
-        walltime = '4:00'
+        walltime = '24:00'
     conda: "envs/bcftools.yaml"
     shell:
         r'''
