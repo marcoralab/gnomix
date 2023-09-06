@@ -6,34 +6,35 @@ datasets:
   #    array: True
   #    filters: '--chr 17'
   #    impute: False
-  BioMe_array-sema4_GDA:
-     infile: '{indir}/sema4_GDA_hg19.bed'
-     build: hg19
-     array: True
-     filters: '--chr 17'
-     impute: False
-  NYSCF_array:
-     infile: input/NYSCF_MSSM_Chr17.ped
-     build: hg19
-     array: True
-     filters: ''
-     impute: True
-  test_vcf:
-     infile: input/test.vcf.gz
-     build: hg38
-     array: False
-     filters: ''
-     impute: False
-     phased: False
-  test_vcf_phased:
-     infile: input/test.vcf.gz
-     build: hg38
-     array: False
-     filters: ''
-     impute: False
-     phased: True
+  # BioMe_array-sema4_GDA:
+  #    infile: '{indir}/sema4_GDA_hg19.bed'
+  #    build: hg19
+  #    array: True
+  #    filters: '--chr 17'
+  #    impute: False
+  # NYSCF_array:
+  #    infile: input/NYSCF_MSSM_Chr17.ped
+  #    build: hg19
+  #    array: True
+  #    impute: True
+  # test_vcf:
+  #    infile: input/test.vcf.gz
+  #    build: hg38
+  #    array: False
+  #    impute: False
+  #    phased: False
+  # test_vcf_phased:
+  #    infile: input/test.vcf.gz
+  #    build: hg38
+  #    array: False
+  #    impute: False
+  #    phased: True
+  ADSP-GCAD-preview-v4:
+    infile: /sc/arion/projects/sharpa01a/1000Genomes_HGDP_Phased_VCFs/ADSP_VCF/ADSP.WGS.SNPs.chr{chrom}.compact_filter.combined.vcf.gz
+    build: hg38
+    array: False
 
-chroms: '1:22'
+chroms: '22'
 
 imputation:
   imputation:
