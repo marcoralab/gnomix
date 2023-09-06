@@ -561,6 +561,14 @@ rule process_smap_1kg_hgdp:
         time_min = 20
     script: 'scripts/rule_process_smap_1kg_hgdp.R' 
 
+rule merge_eur:
+    input: ref_pops
+    output: "reference_proc/{refname}.mergedeur.smap"
+    threads: 1
+    resources:
+        mem_mb = 4000,
+        time_min = 2
+    shell: r'''awk 'BEGIN {{OFS="\t"}} $2 ~ "^fin|nfe$" {{$2 = "eur"}} 1 {{print}}' {input} > {output}'''
 
 rule gnomix_model:
     input:
