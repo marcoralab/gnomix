@@ -6,6 +6,7 @@ output
 src
 sandbox
 .snakemake
+.snakemake_
 .cache
 .ropeproject
 logs
@@ -16,3 +17,10 @@ reference_proc
 BioMe_array-regeneron_GSA.*
 BioMe_array-sema4_GDA.*
 core.*
+./dag*
+run_gnomad_unfilt
+run_gnomad_filt
+run_presentation
+temp/
+.vscode/
+resources/

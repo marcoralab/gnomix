@@ -1,6 +1,8 @@
 from snakemake.utils import min_version
 min_version("7.0")
 
+ruleorder: vcf_presplit > splits > merge_gnomix > Concatenate > Compress > shapeit_index_vcf
+
 import re
 from snakemake.remote.FTP import RemoteProvider as FTPRemoteProvider
 from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
@@ -11,7 +13,7 @@ from urllib.error import URLError
 try:
     response = urlopen('https://www.google.com/', timeout=10)
     iconnect = True
-except urllib.error.URLError as ex:
+except URLError as ex:
     iconnect = False
 
 
@@ -33,11 +35,12 @@ else:
 reporoot = "raw.githubusercontent.com/AI-sandbox/gnomix/main" 
 
 ref_vcf = {"hg19": "reference/1000gRaw.hg19.chr{chrom}.vcf.gz",
-           "hg38": "/sc/arion/scratch/gargp01/ToShare/1000Genomes_HGDP_Phased_VCFs/hgdp.tgp.gwaspy.merged.chr{chrom}.merged.cleaned.vcf.gz"} # "reference/1000gRaw.GRCh38.chr{chrom}.vcf.gz"}
+           "hg38": "/sc/arion/projects/sharpa01a/1000Genomes_HGDP_Phased_VCFs/hgdp.tgp.gwaspy.merged.chr{chrom}.merged.cleaned.vcf.gz"} # "reference/1000gRaw.GRCh38.chr{chrom}.vcf.gz"}
 ref_fasta = {"hg19": "reference/human_g1k_hg19.fasta",
              "hg38": "reference/human_g1k_GRCh38.fasta"}
-ref_pops = 'reference_proc/hgdp_1kg.smap' # HTTP.remote(reporoot + "/demo/data/1000g.smap") if iconnect else ''
-ref_name = "1000g"
+ref_pops = {"hg19": HTTP.remote(reporoot + "/demo/data/1000g.smap") if iconnect else '',
+            "hg38": 'reference_proc/hgdp_1kg_filt.smap'}
+ref_name = {"hg19": "1000g", "hg38": "hgdp_1kg"}
 
 conf = config['datasets']
 
@@ -287,7 +290,7 @@ rule vcf:
     threads: 1
     resources:
         mem_mb = 4000,
-        time_min = 120
+        time_min = 8600
     shell: '''
 filt="{params.filt}"
 if [[ -z "${{filt// }}" ]]; then
@@ -308,8 +311,8 @@ rule vcf_split:
     conda: "envs/bcftools.yaml"
     threads: 1
     resources:
-        mem_mb = 4000,
-        time_min = 120
+        mem_mb = 16000,
+        time_min = 8600
     shell: '''
 bcftools view -r {wildcards.chrom} -Oz -o {output.vcf} {input.vcf} && \
 sleep 5 && \
@@ -327,7 +330,7 @@ rule vcf_presplit:
     threads: 1
     resources:
         mem_mb = 4000,
-        time_min = 120
+        time_min = 8600
     shell: '''
 filt="{params.filt}"
 if [[ -z "${{filt// }}" ]]; then
@@ -359,12 +362,25 @@ rule bcf:
     threads: 1
     resources:
         mem_mb = 4000,
-        time_min = 360
+        time_min = 1440
     shell:
         """
 bcftools norm -Ob -o {output} -d none -f {input.fasta} {input.vcf} && \
 bcftools index {output}
 """
+
+module shapeit:
+    snakefile: snakefile_shapeit
+    config: {'AC': True}
+
+use rule * from shapeit as shapeit_*
+
+use rule convert_phased from shapeit as shapeit_convert_phased with:
+    output: "intermediate/{genotypes}.hg38.chr{chrom}.shapeit5.vcf.gz"
+
+use rule shapeit_filter from shapeit as shapeit_shapeit_filter with:
+    input: "intermediate/{genotypes}.hg38.chr{chrom}.bcf"
+    output: temp('temp/shapeit_filtered/{genotypes}.chr{chrom}.filtered.bcf')
 
 rule makeref:
     input:
@@ -384,36 +400,142 @@ bcftools view -Ou -c 2 {input.vcf} | \
  bcftools index -f {output}
 '''
 
-def choose_vcf_ref(wc):
-    ds = wc['dataset']
-    intype = input_type_dict[ds]
-    if conf[ds].get('phased', False):
-        assert intype == 'vcf', 'plink files cannot be phased and bcf files are not yet supported'
-        return conf[ds]['infile']
-    elif intype == 'vcf' and re.match(r'.+\{chrom\}', conf[ds]['infile']):
-        return rules.vcf_presplit.output.vcf
-    else:
-        return rules.vcf.output.vcf
+rule process_smap_1kg_hgdp:
+    input:
+        metadata = HTTP.remote("storage.googleapis.com/gcp-public-data--gnomad/release/3.1.2/vcf/genomes/gnomad.genomes.v3.1.2.hgdp_1kg_subset_sample_meta.tsv.bgz")
+    output:
+        table = "reference_proc/hgdp_1kg.popdata.tsv.gz",
+        smap = "reference_proc/hgdp_1kg.smap"
+    threads: 1
+    resources:
+        mem_mb = 512,
+        time_min = 1
+    script: 'scripts/rule_process_smap_1kg_hgdp.R'
+
+admixstem = "gnomad.genomes.v3.1.2.hgdp_tgp.pruned"
+
+rule ref_admixture_filterprune:
+    input: "/sc/arion/projects/load/data-ark/Public_Unrestricted/gnomAD/3.1/vcfs/HGDP-1KG/gnomad.genomes.v3.1.2.hgdp_tgp.chr{chrom}.vcf.bgz"
+    output: temp(f'reference_proc/{admixstem}.chr{{chrom}}.vcf.gz')
+    conda: "envs/bcftools.yaml"
+    threads: 4
+    resources:
+        mem_mb = 2048,
+        time_min = 360
+    shell:
+        '''
+bcftools filter -i 'FILTER="PASS" && INFO/AF[0] >= 0.05 && INFO/AF[0] <= 0.95 && F_MISSING < 0.05' {input} | \
+  bcftools annotate -x 'INFO,^FORMAT/GT' | \
+  bcftools view --types snps |
+  bcftools +prune -m r2=0.1 -w 100kb -Oz -o {output}
+'''
+
+rule ref_admixture_cat:
+    input: expand('reference_proc/{stem}.chr{chrom}.vcf.gz', stem=admixstem, chrom=range(1, 23))
+    output: temp(f'reference_proc/{admixstem}.vcf.gz')
+    threads: 1
+    resources:
+        mem_mb = 256,
+        time_min = 5
+    shell:
+        '''
+bcftools concat -Oz -o {output} {input}
+'''
+
+rule ref_plink:
+    input: rules.ref_admixture_cat.output
+    output: multiext(f'reference_proc/{admixstem}.', 'bed', 'bim', 'fam')
+    params:
+        out = lambda wc, output: output[0][:-4]
+    conda: 'envs/plink.yaml'
+    shell:
+        '''
+plink --vcf {input} --double-id --keep-allele-order --make-bed --out {params.out}
+'''
+
+rule admixture:
+    input:
+        bed = f"reference_proc/{admixstem}.bed",
+        other = multiext(f"reference_proc/{admixstem}.", "bim", "fam")
+    output:
+        Qtemp = temp(f'{admixstem}.12.Q'),
+        Ptemp = temp(f'{admixstem}.12.P'),
+        Q = 'reference_proc/gnomad_1kg_hgdp.12.Q',
+        P = 'reference_proc/gnomad_1kg_hgdp.12.P'
+    log: 'reference_proc/gnomad_1kg_hgdp.12.log'
+    threads: 40
+    resources:
+        mem_mb = 5120, # Very efficient memory usage. Previous run used 2936 MB
+        time_min = 1440 # 24 hours. Should take <= 14 hours
+    container: 'docker://befh/r_env_gwasamplefilt:5'
+    shell:
+        '''
+admixture -s 42 --cv {input.bed} 12 -j{threads} 2>&1 | tee {log}
+cp {output.Qtemp} {output.Q}
+cp {output.Ptemp} {output.P}
+'''
+
+rule process_admixture:
+    input:
+        q = rules.admixture.output.Q,
+        fam = f"reference_proc/{admixstem}.fam",
+        pops = rules.process_smap_1kg_hgdp.output.table
+    output:
+        smap = "reference_proc/hgdp_1kg_filt.smap",
+        rda = "reference_proc/hgdp_1kg.admixture.rda",
+        samplist = "reference_proc/hgdp_1kg.filt.samplist"
+    threads: 1
+    resources:
+        mem_mb = 512,
+        time_min = 5
+    container: 'docker://befh/r_procadmix:v1'
+    script: 'scripts/rule_process_admixture.R'
+
+rule report_refadmix:
+    input: rules.process_admixture.output.rda
+    output: 'reference_proc/hgdp_1kg.admixture.html'
+    threads: 1
+    resources:
+        mem_mb = 1024,
+        time_min = 10
+    container: 'docker://befh/r_procadmix:v1'
+    script: 'scripts/rule_report_refadmix.Rmd'
 
 rule get_refsamp:
-    input: ref_pops
-    output: "reference_proc/{refname}.{build}.samplist" 
+    input: lambda wc: ref_pops[wc["build"]]
+    output: "reference_proc/{refname}.{build}.fromsmap.samplist" 
     threads: 4
     resources:
         mem_mb = 4000,
         walltime = '96:00'
     shell: r'''awk -F '\t' 'NR > 1 {{print $1}}' {input} > {output}'''
 
+def choose_vcf_ref(wc):
+    ds = wc['dataset']
+    intype = input_type_dict[ds]
+    if conf[ds].get('phased', False):
+        assert intype == 'vcf', 'plink files cannot be phased and bcf files are not yet supported'
+        return conf[ds]['infile']
+    elif conf[ds].get('impute', False):
+        assert input_type_dict[ds] != 'vcf', 'cannot impute vcf yet'
+        return 'output/imputation/data/by_chrom/{dataset}_chr{chrom}_filtered.vcf.gz',
+    elif wc['build'] == 'hg38':
+        return "intermediate/{dataset}.{build}.chr{chrom}.forgnomix.vcf.gz"
+    elif intype == 'vcf' and re.match(r'.+\{chrom\}', conf[ds]['infile']):
+        return rules.vcf_presplit.output.vcf
+    else:
+        return rules.vcf.output.vcf
+
 rule filter_ref:
     input:
       ref = rules.makeref.output,
       samp = choose_vcf_ref,
-      ref_samples = rules.get_refsamp.output
+      ref_samples = lambda wc: rules.process_admixture.output.samplist if wc['build'] == "hg38" else rules.get_refsamp.output
     output: "reference_proc/{refname}.{build}.chr{chrom}.filtered_{dataset}.vcf.gz"
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
-        mem_mb = 4000,
+        mem_mb = 1024,
         walltime = '96:00'
     shell:
         '''
@@ -424,10 +546,10 @@ bcftools index -f {output}
 rule eagle:
     input:
         target = rules.bcf.output,
-        ref = expand("reference_proc/{refname}.{{build}}.chr{{chrom}}.bcf", refname=ref_name)
-    output: "intermediate/{dataset}.{build}.chr{chrom}.phased.vcf.gz"
+        ref = lambda wc: expand("reference_proc/{refname}.{{build}}.chr{{chrom}}.bcf", refname=ref_name[wc['build']])
+    output: "intermediate/{dataset}.{build}.chr{chrom}.eagle2.vcf.gz"
     params:
-        outstem = "intermediate/{dataset}.{build}.chr{chrom}.phased"
+        outstem = "intermediate/{dataset}.{build}.chr{chrom}.eagle2"
     log: "logs/{dataset}_{build}_chr{chrom}.eagle.log"
     threads: 20
     resources:
@@ -464,17 +586,19 @@ def choose_vcf_gnomix(wc):
     elif conf[ds].get('phased', False):
         assert intype == 'vcf', 'plink files cannot be phased and bcf files are not yet supported'
         return choose_vcf_general(wc)
+    elif wc['build'] == 'hg38':
+        return "intermediate/{dataset}.hg38.chr{chrom}.shapeit5.vcf.gz"
     else:
-        return "intermediate/{dataset}.{build}.chr{chrom}.phased.vcf.gz"
+        return "intermediate/{dataset}.{build}.chr{chrom}.eagle2.vcf.gz"
     
 rule vcf_gnomix:
     input: choose_vcf_gnomix
-    output: temp("intermediate/{dataset}.{build}.chr{chrom}.forgnomix.vcf.gz"),
+    output: "intermediate/{dataset}.{build}.chr{chrom}.forgnomix.vcf.gz",
     resources:
         mem_mb = 4000,
-        time_min = 30
+        time_min = 240
     shell: '''
-cp {input} {output}
+ln -rs {input} {output}
 '''
 
 rule sample_list:
@@ -488,7 +612,7 @@ rule sample_list:
     shell: "bcftools query -l {input[0]} > {output}"
 
 checkpoint sample_list_split:
-    input: rules.sample_list.output
+    input: ancient(rules.sample_list.output)
     output: directory("intermediate/sample_lists/split_{dataset}")
     params:
         splitstem = "intermediate/sample_lists/split_{dataset}/split."
@@ -501,15 +625,15 @@ checkpoint sample_list_split:
 rule splits:
     input:
         sample_list = "intermediate/sample_lists/split_{dataset}/split.{chunk}",
-        vcf = rules.eagle.output
+        vcf = rules.vcf_gnomix.output
     output:
         vcf = temp("intermediate/{dataset}.{build}.chr{chrom}.chunk{chunk}.vcf.gz"),
         tbi = temp("intermediate/{dataset}.{build}.chr{chrom}.chunk{chunk}.vcf.gz.tbi"),
     conda: "envs/bcftools.yaml"
-    threads: 4
+    threads: 1
     resources:
         mem_mb = 4000,
-        time_min = 30
+        time_min = 960
     shell:
         '''
 bcftools view --samples-file {input.sample_list} -Oz -o {output.vcf} {input.vcf}
@@ -525,10 +649,10 @@ rule vcf_model_fit:
         vcf = temp("intermediate/{dataset}.{build}.chr{chrom}.modelfit.vcf.gz"),
         tbi = temp("intermediate/{dataset}.{build}.chr{chrom}.modelfit.vcf.gz.tbi"),
     conda: "envs/bcftools.yaml"
-    threads: 4
+    threads: 1
     resources:
         mem_mb = 4000,
-        time_min = 30
+        time_min = 960
     shell:
         '''
 head -n4 {input.sample_list} > {output.sample_list}
@@ -547,35 +671,12 @@ rule download_config:
         time_min = 5
     shell: 'cp {input} {output}'
 
-
-rule process_smap_1kg_hgdp:
-    input:
-        metadata = HTTP.remote("storage.googleapis.com/gcp-public-data--gnomad/release/3.1.2/vcf/genomes/gnomad.genomes.v3.1.2.hgdp_1kg_subset_sample_meta.tsv.bgz"),
-        samplist = "resources/hgdp_1kg.ref_samples.list"
-    output:
-        table = "reference_proc/hgdp_1kg.popdata.tsv.gz",
-        smap = "reference_proc/hgdp_1kg.smap"
-    threads: 1
-    resources:
-        mem_mb = 16000,
-        time_min = 20
-    script: 'scripts/rule_process_smap_1kg_hgdp.R' 
-
-rule merge_eur:
-    input: ref_pops
-    output: "reference_proc/{refname}.mergedeur.smap"
-    threads: 1
-    resources:
-        mem_mb = 4000,
-        time_min = 2
-    shell: r'''awk 'BEGIN {{OFS="\t"}} $2 ~ "^fin|nfe$" {{$2 = "eur"}} 1 {{print}}' {input} > {output}'''
-
 rule gnomix_model:
     input:
         query = "intermediate/{dataset}.{build}.chr{chrom}.modelfit.vcf.gz",
         genetic_map = rules.geneticMapGnomix.output,
-        reference = expand("reference_proc/{refname}.{{build}}.chr{{chrom}}.filtered_{{dataset}}.vcf.gz", refname=ref_name),
-        sample_map =  ref_pops,
+        reference = lambda wc: expand("reference_proc/{refname}.{{build}}.chr{{chrom}}.filtered_{{dataset}}.vcf.gz", refname=ref_name[wc['build']]),
+        sample_map =  lambda wc: ref_pops[wc['build']],
         config = lambda wc: gconfig_local_dict[wc["dataset"]]
     output:
         'output/models/{dataset}_{build}_chr{chrom}/models/model_chm_{chrom}/model_chm_{chrom}.pkl'
@@ -584,7 +685,7 @@ rule gnomix_model:
         phase = 'False', #True or False
     threads: 40
     resources:
-        mem_mb = 4000,
+        mem_mb = 8000,
         walltime = '140:00'
     container: "docker://befh/gnomix:v2"
     shell:
@@ -611,7 +712,7 @@ rule gnomix:
         phase = 'True', #True or False
     threads: 40
     resources:
-        mem_mb = 2000,
+        mem_mb = 3000,
         walltime = '140:00'
     container: "docker://befh/gnomix:v2"
     shell:

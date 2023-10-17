@@ -1,4 +1,4 @@
-indir: "/sc/arion/projects/LOAD/Data/BioME/sample_QC/GWASampleFiltering/input"
+indir: "/some/directory"
 datasets:
   # BioMe_array-regeneron_GSA:
   #    infile: '{indir}/regeneron_GSA_hg19.bed'
@@ -33,18 +33,18 @@ datasets:
   #  infile: /sc/arion/projects/sharpa01a/1000Genomes_HGDP_Phased_VCFs/ADSP_VCF/ADSP.WGS.SNPs.chr{chrom}.compact_filter.combined.vcf.gz
   #  build: hg38
   #  array: False
-  ADSP-WGS-r4:
-    infile: /sc/arion/projects/load/data-ext/ADSP/ADSP_Umbrella_ng00067.v10/geno/gcad.qc.compact_filtered.r4.wgs.36361.GATK.2023.06.06.biallelic.genotypes.chr{chrom}.ALL.vcf.bgz
-    build: hg38
-    array: False
-    filters: -i 'F_MISSING < 0.1 && FILTER = "PASS" && MAC > 0 && VFLAGS_One_subgroup = 0 && ABHet_One_subgroup > 0.25 && ABHet_One_subgroup < 0.75'
+  # ADSP-WGS-r4:
+  #   infile: /sc/arion/projects/load/data-ext/ADSP/ADSP_Umbrella_ng00067.v10/geno/gcad.qc.compact_filtered.r4.wgs.36361.GATK.2023.06.06.biallelic.genotypes.chr{chrom}.ALL.vcf.bgz
+  #   build: hg38
+  #   array: False
+  #   filters: -i 'F_MISSING < 0.1 && FILTER = "PASS" && MAC > 0 && VFLAGS_One_subgroup = 0 && ABHet_One_subgroup > 0.25 && ABHet_One_subgroup < 0.75'
 
 chroms: '1:22'
 
 imputation:
   imputation:
     default:
-      token: eyJjdHkiOiJ0ZXh0XC9wbGFpbiIsImFsZyI6IkhTMjU2In0.eyJuYW1lIjoiU2FyYWggV2VpdHptYW4iLCJhcGkiOnRydWUsIm1haWwiOiJzYXJhaC53ZWl0em1hbkBpY2Fobi5tc3NtLmVkdSIsImV4cGlyZSI6MTY2OTQwODIxNjU2MSwidXNlcm5hbWUiOiJ3ZWl0enMwMSJ9.zQ8QAfNx14PG6TFifxBhmYlVPLdnTmN2Ym13be10ST0
+      token: your_token_here
   
   # Select chromosomes you want to upload
   #  separate ranges with ":" and listed chromosomes with ","
