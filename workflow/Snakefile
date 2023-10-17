@@ -194,13 +194,14 @@ config_impute['imputation']['default']['build'] = impute_build
 config_impute['imputation']['default']['refpanel'] = 'topmed-r2'
 # snakefile_impute = 'modules/imputePipeline/workflow/Snakefile'
 snakefile_impute = github("marcoralab/imputePipeline", path="workflow/Snakefile", tag="v0.4.10")
+#snakefile_shapeit = github("marcoralab/shapeit5_pipeline", path="workflow/Snakefile", tag="866c2e3")
+snakefile_shapeit = 'modules/shapeit5_pipeline/workflow/Snakefile'
 
 module imputation:
     snakefile: snakefile_impute
     config: config_impute
 
 use rule * from imputation as imputation_*
-
 
 rule Sample_Flip:
     input:
