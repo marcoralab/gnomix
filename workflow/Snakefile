@@ -202,6 +202,9 @@ if 'shapeit5_pipeline' not in config['pipeline_versions']:
 version_impute = config['pipeline_versions']['imputePipeline']
 version_shapeit = config['pipeline_versions']['shapeit5_pipeline']
 
+if 'postImpute' in config['pipeline_versions']:
+    config_impute['version_postImpute'] = config['pipeline_versions']['postImpute']
+
 if re.match(r'/', version_impute):
     snakefile_impute = os.path.join(
         os.path.normpath(version_impute), 'workflow', 'Snakefile')
