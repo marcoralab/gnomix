@@ -1,7 +1,7 @@
 from snakemake.utils import min_version
 min_version("7.0")
 
-ruleorder: vcf_presplit > sort_vcf_allchr > splits > merge_gnomix > Concatenate > Compress > shapeit_index_vcf
+# ruleorder: vcf_presplit > splits > merge_gnomix > Concatenate > Compress > imputation_sort_vcf_allchr > shapeit_index_vcf
 
 import re
 from snakemake.remote.FTP import RemoteProvider as FTPRemoteProvider
