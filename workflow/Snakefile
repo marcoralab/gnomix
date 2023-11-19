@@ -37,34 +37,31 @@ reporoot = "raw.githubusercontent.com/AI-sandbox/gnomix/main"
 ref_vcf = {"hg19": "reference/1000gRaw.hg19.chr{chrom}.vcf.gz",
            "hg38": "/sc/arion/projects/sharpa01a/1000Genomes_HGDP_Phased_VCFs/hgdp.tgp.gwaspy.merged.chr{chrom}.merged.cleaned.vcf.gz"} # "reference/1000gRaw.GRCh38.chr{chrom}.vcf.gz"}
 ref_fasta = {"hg19": "reference/human_g1k_hg19.fasta",
-             "hg38": "reference/human_ucsc_GRCh38.fasta"}
+             "hg38": "reference/human_gatk_GRCh38.fasta"}
 ref_pops = {"hg19": HTTP.remote(reporoot + "/demo/data/1000g.smap") if iconnect else '',
             "hg38": 'reference_proc/hgdp_1kg_filt.smap'}
 ref_name = {"hg19": "1000g", "hg38": "hgdp_1kg"}
 
 tgbase = "http://ftp-trace.ncbi.nih.gov/1000genomes/ftp/"
-tgbase_38 = "https://hgdownload.cse.ucsc.edu/goldenPath/" # not actually tg
-# tgbase_38 = "ftp.1000genomes.ebi.ac.uk/vol1/ftp/"
+tgbase_38 = ("https://storage.googleapis.com/" +
+             "gcp-public-data--broad-references/hg38/v0/")
 
 tgfasta = dict(
     hg19=(tgbase + "technical/reference/human_g1k_v37.fasta.gz"),
-    GRCh38=(tgbase_38 + 'hg38/hg38Patch11/hg38Patch11.fa.gz'))
-    # GRCh38=(tgbase_38 + 'technical/reference/GRCh38_reference_genome/'
-    #         + 'GRCh38_full_analysis_set_plus_decoy_hla.fa'))
+    GRCh38=(tgbase_38 + 'Homo_sapiens_assembly38.fasta'))
 
 def fasta_remote(wc):
     gbuild = wc.gbuild
-    if gbuild == 'GRCh38':
-        return HTTP.remote(tgfasta['GRCh38'])
-        # return FTP.remote(tgfasta['GRCh38'], immediate_close=True)
-    else:
-        return HTTP.remote(tgfasta[gbuild])
+    return HTTP.remote(tgfasta[gbuild])
+    # if gbuild == 'GRCh38':
+    #     return FTP.remote(tgfasta['GRCh38'], immediate_close=True)
+    # else:
+    #     return HTTP.remote(tgfasta[gbuild])
 
 def fasta_md5(wc):
     gbuild = wc.gbuild
     if gbuild == 'GRCh38':
-        return '2c375fad75722ad26dab4791eb9e0678'
-        # return '64b32de2fc934679c16e83a2bc072064'
+        return '7ff134953dcca8c8997453bbb80b6b5e'
     elif gbuild == 'hg19':
         return '45f81df94f0408d082363e34a081ed81'
 
@@ -161,6 +158,7 @@ rule download_tg_fa:
         mem_mb = 10000,
         time_min = 30
     conda: 'envs/bcftools.yaml'
+    localrule: True
     #cache: True
     shell:
         '''
