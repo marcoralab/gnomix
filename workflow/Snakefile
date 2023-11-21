@@ -304,23 +304,52 @@ rule Sample_ChromPosRefAlt:
     container: 'docker://befh/r_env_gwasamplefilt:5'
     script: 'scripts/bim_ChromPosRefAlt.R'
 
+rule rename_chrom:
+    input:
+        fasta = lambda wc: ref_fasta[wc["build"]],
+    output:
+        json = 'intermediate/rename/{dataset}.{build}.from{inputtype}_mapping.json',
+        mapping = 'intermediate/rename/{dataset}.{build}.from{inputtype}_mapping.txt'
+    threads: 1
+    resources:
+        mem_mb = 256,
+        time_min = 10
+    container: 'docker://befh/flippyr:0.5.3'
+    script: 'scripts/rule_rename_chrom.py'
+
 # Recode sample plink file to vcf
 rule plink_vcf:
     input:
         bed = "intermediate/{dataset}.{build}.from{inputtype}_flipped.bed",
         bim = "intermediate/{dataset}.{build}.from{inputtype}_flipped_ChromPos.bim",
         fam = "intermediate/{dataset}.{build}.from{inputtype}_flipped.fam"
-    output: temp("intermediate/{dataset}.{build}.from{inputtype}.vcf.gz")
+    output: temp("intermediate/{dataset}.{build}.from{inputtype}.plink_contigs.vcf.gz")
     params:
-        out = "intermediate/{dataset}.{build}.from{inputtype}"
+        out = "intermediate/{dataset}.{build}.from{inputtype}.plink_contigs"
+    threads: 40
     resources:
-        mem_mb = 10000,
-        time_min = 30
-    conda: "envs/plink.yaml"
+        mem_mb = 4000,
+        time_min = 1440
+    conda: "envs/plink2.yaml"
     shell:
         '''
-plink --bed {input.bed} --bim {input.bim} --fam {input.fam} --recode vcf bgz \
-  --real-ref-alleles --out {params.out}
+plink2 --bed {input.bed} --bim {input.bim} --fam {input.fam} --recode vcf bgz \
+  --real-ref-alleles --out {params.out} --threads {threads} --memory 160000
+'''
+
+rule rename_vcf:
+    input:
+        vcf = rules.plink_vcf.output,
+        mapping = rules.rename_chrom.output.mapping
+    output: temp("intermediate/{dataset}.{build}.from{inputtype}.vcf.gz")
+    threads: 4
+    resources:
+        mem_mb = 2048,
+        time_min = 2880
+    conda: "envs/bcftools.yaml"
+    shell:
+        '''
+bcftools annotate --rename-chrs {input.mapping} -Oz -o {output} --threads {threads} {input.vcf}
 '''
 
 def choose_vcf_initial(wc):
