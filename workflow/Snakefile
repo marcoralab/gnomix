@@ -30,8 +30,6 @@ else:
     FTP = dummyprovider
     HTTP = dummyprovider
 
-#import ipdb; ipdb.set_trace()
-
 reporoot = "raw.githubusercontent.com/AI-sandbox/gnomix/main" 
 
 ref_vcf = {"hg19": "reference/1000gRaw.hg19.chr{chrom}.vcf.gz",
@@ -87,8 +85,9 @@ def get_intype(conf, dataset):
         raise Exception('Unrecognized file type')
 
 def get_in(conf, dataset):
+    inputdir = config['indir'] if 'indir' in config else ''
     fname = conf[dataset]['infile']
-    fname = fname.format(indir=config['indir'], chrom='{chrom}') #allow
+    fname = fname.format(indir=inputdir, chrom='{chrom}') #allow
     intype = get_intype(conf, dataset)
     if intype in ['plink', 'bplink']:
         return fname[0:-4]
@@ -127,6 +126,7 @@ if len(impute_build) > 0:
 else:
     impute_build = 'hg19'
 impute_fasta = ref_fasta[impute_build]
+gnofix = config['rephase'] if 'rephase' in config else True
 
 gconfig_filename_dict = {
   k: ("config_array.yaml" if v else "config.yaml") for k, v in zip(DATASETS, array)}
@@ -141,11 +141,24 @@ build_dict = dict_settings(BUILD)
 wildcard_constraints:
     build='hg(19|38)'
 
+if len(CHROMS) == 1:
+    concatenated = expand('output/merged/{{dataset}}_{{build}}_chr{chrom}.vcf.gz', chrom=CHROMS)[0]
+else:
+    concatenated = 'output/{dataset}_{build}_chrall.vcf.gz'
+
+if len(DATASETS) == 1:
+    target_vcf = expand(concatenated, dataset=DATASETS, build=BUILD)
+else:
+    target_vcf = "output/merged.vcf.gz"
+
+lai_outs = expand(expand('output/merged/{dataset}_{build}_chr{{chrom}}.{{ext}}',
+                         zip, dataset=DATASETS, build=BUILD),
+                  ext=['fb', 'msp'], chrom=CHROMS)
+
 rule all:
     input:
-        "output/merged.vcf.gz"
-        #expand('output/{dataset}_chr{chrom}/{dataset}_chr{chrom}.vcf.gz',
-        #       dataset=DATASETS, chrom=CHROMS)
+        target_vcf if gnofix else [],
+        lai_outs
 
 rule download_tg_fa:
     input: fasta_remote
@@ -233,35 +246,14 @@ cp {input.bim} {output.bim}
 cp {input.fam} {output.fam}
 '''
     
-
-config_impute = config["imputation"]
-config_impute["chroms"] = config["chroms"]
-config_impute["directory"] = "intermediate/impute_start/"
-config_impute["SAMPLES"] = impute_datasets
-config_impute["out_dir"] = "output/imputation"
-config_impute['ref'] = impute_fasta
-config_impute['imputation']['default']['build'] = impute_build
-config_impute['imputation']['default']['refpanel'] = 'topmed-r3'
-
 if 'pipeline_versions' not in config:
     config['pipeline_versions'] = {}
 if 'imputePipeline' not in config['pipeline_versions']:
     config['pipeline_versions']['imputePipeline'] = 'v0.5.1'
 if 'shapeit5_pipeline' not in config['pipeline_versions']:
     config['pipeline_versions']['shapeit5_pipeline'] = '866c2e3'
-version_impute = config['pipeline_versions']['imputePipeline']
+
 version_shapeit = config['pipeline_versions']['shapeit5_pipeline']
-
-if 'postImpute' in config['pipeline_versions']:
-    config_impute['version_postImpute'] = config['pipeline_versions']['postImpute']
-
-if re.match(r'/', version_impute):
-    snakefile_impute = os.path.join(
-        os.path.normpath(version_impute), 'workflow', 'Snakefile')
-else:
-    snakefile_impute = github("marcoralab/imputePipeline",
-        path="workflow/Snakefile", tag=version_impute)
-
 if re.match(r'/', version_shapeit):
     snakefile_shapeit = os.path.join(
         os.path.normpath(version_shapeit), 'workflow', 'Snakefile')
@@ -269,11 +261,32 @@ else:
     snakefile_shapeit = github("marcoralab/shapeit5_pipeline",
         path="workflow/Snakefile", tag=version_shapeit)
 
-module imputation:
-    snakefile: snakefile_impute
-    config: config_impute
+if impute_datasets:
+    config_impute = config["imputation"]
+    config_impute["chroms"] = config["chroms"]
+    config_impute["directory"] = "intermediate/impute_start/"
+    config_impute["SAMPLES"] = impute_datasets
+    config_impute["out_dir"] = "output/imputation"
+    config_impute['ref'] = impute_fasta
+    config_impute['imputation']['default']['build'] = impute_build
+    config_impute['imputation']['default']['refpanel'] = 'topmed-r3'
 
-use rule * from imputation as imputation_*
+    if 'postImpute' in config['pipeline_versions']:
+        config_impute['version_postImpute'] = config['pipeline_versions']['postImpute']
+    
+    version_impute = config['pipeline_versions']['imputePipeline']
+    if re.match(r'/', version_impute):
+        snakefile_impute = os.path.join(
+            os.path.normpath(version_impute), 'workflow', 'Snakefile')
+    else:
+        snakefile_impute = github("marcoralab/imputePipeline",
+            path="workflow/Snakefile", tag=version_impute)
+
+    module imputation:
+        snakefile: snakefile_impute
+        config: config_impute
+    
+    use rule * from imputation as imputation_*
 
 rule Sample_Flip:
     input:
@@ -762,8 +775,6 @@ bcftools view --samples-file {output.sample_list} -Oz -o {output.vcf} {input.vcf
 bcftools index -tf {output.vcf}
 '''
 
-#import ipdb; ipdb.set_trace()
-
 rule download_config:
     input: HTTP.remote(f'{reporoot}/configs/{{conf}}.yaml') if iconnect else f'{reporoot}/configs/{{conf}}.yaml'
     output: 'intermediate/configs/{conf}.yaml'
@@ -852,15 +863,16 @@ def aggregate(wildcards, fname):
     # return ins
     return expand(gchunkdirp + fname, chunk=chunks)
 
+
 rule merge_gnomix:
     input:
-        vcf = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz'),
-        tbi = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz.tbi'), 
+        vcf = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz') if gnofix else [],
+        tbi = lambda wc: aggregate(wc, '/{{dataset}}_chr{{chrom}}.vcf.gz.tbi') if gnofix else [], 
         fb = lambda wc: aggregate(wc, '/query_results.fb'), 
         msp = lambda wc: aggregate(wc, '/query_results.msp') 
     output:
-        vcf = 'output/merged/{dataset}_{build}_chr{chrom}.vcf.gz',
-        tbi = 'output/merged/{dataset}_{build}_chr{chrom}.vcf.gz.tbi',
+        vcf = 'output/merged/{dataset}_{build}_chr{chrom}.vcf.gz' if gnofix else [],
+        tbi = 'output/merged/{dataset}_{build}_chr{chrom}.vcf.gz.tbi' if gnofix else [],
         msp = 'output/merged/{dataset}_{build}_chr{chrom}.msp',
         fb = 'output/merged/{dataset}_{build}_chr{chrom}.fb',
         tmp = temp('output/merged/{dataset}_{build}_chr{chrom}.tmp')
@@ -871,8 +883,10 @@ rule merge_gnomix:
     conda: "envs/gnomad_merge.yaml"
     shell:
         r'''
-bcftools merge -Oz -o {output.vcf} {input.vcf}
-bcftools index -tf {output.vcf}
+if [ "{gnofix}" == "True" ]; then
+  bcftools merge -Oz -o {output.vcf} {input.vcf}
+  bcftools index -tf {output.vcf}
+fi
 
 tmpfile={output.tmp}
 out_msp={output.msp}
@@ -948,8 +962,8 @@ bcftools index -tf {output.vcf}
 
 rule Merge:
     input:
-        vcf = expand('output/{dataset}_{build}_chrall.vcf.gz', zip, dataset=DATASETS, build=BUILD),
-        tbi = expand('output/{dataset}_{build}_chrall.vcf.gz.tbi', zip, dataset=DATASETS, build=BUILD)
+        vcf = expand(concatenated, zip, dataset=DATASETS, build=BUILD),
+        tbi = expand(concatenated + '.tbi', zip, dataset=DATASETS, build=BUILD)
     output:
         vcf = "output/merged.vcf.gz",
         tbi = "output/merged.vcf.gz.tbi"
