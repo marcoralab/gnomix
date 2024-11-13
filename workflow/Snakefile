@@ -1,7 +1,6 @@
 from snakemake.utils import min_version
 min_version("7.0")
 
-ruleorder: vcf > vcf_presplit > splits > merge_gnomix > Concatenate > Compress > shapeit_index_vcf
 
 import re
 from snakemake.remote.FTP import RemoteProvider as FTPRemoteProvider
@@ -29,6 +28,13 @@ if iconnect: # and not ('nointernet' in config and config['nointernet']):
 else:
     FTP = dummyprovider
     HTTP = dummyprovider
+
+if 'pipeline_versions' not in config:
+    config['pipeline_versions'] = {}
+if 'imputePipeline' not in config['pipeline_versions']:
+    config['pipeline_versions']['imputePipeline'] = 'v0.5.1'
+if 'shapeit5_pipeline' not in config['pipeline_versions']:
+    config['pipeline_versions']['shapeit5_pipeline'] = '866c2e3'
 
 reporoot = "raw.githubusercontent.com/AI-sandbox/gnomix/main" 
 
@@ -118,6 +124,7 @@ filter_dict = {x: conf[x].get('filters', '') for x in DATASETS}
 input_type_dict = {x: get_intype(conf, x) for x in DATASETS}
 input_dict = {x: get_in(conf, x) for x in DATASETS}
 impute_datasets = [x for x in DATASETS if conf[x].get('impute', False)]
+phase_datasets = [x for x in DATASETS if not conf[x].get('phased', False)]
 impute_build = [conf[x]['build'] for x in DATASETS if conf[x].get('impute', False)]
 if len(impute_build) > 0:
     assert len(set(impute_build)) == 1, "There can only be one build for imputation"
@@ -230,37 +237,6 @@ def preimpute_files(wc):
         inputtype=intype, build=impute_build, dataset=ds)[0]
     return {x: stem + '.' + x for x in ['bed', 'bim', 'fam']}
 
-rule link_impute:
-    input: unpack(preimpute_files)
-    output:
-        bed = "intermediate/impute_start/{dataset}.bed",
-        bim = "intermediate/impute_start/{dataset}.bim",
-        fam = "intermediate/impute_start/{dataset}.fam"
-    resources:
-        mem_mb = 1000,
-        time_min = 30
-    shell:
-        '''
-cp {input.bed} {output.bed}
-cp {input.bim} {output.bim}
-cp {input.fam} {output.fam}
-'''
-    
-if 'pipeline_versions' not in config:
-    config['pipeline_versions'] = {}
-if 'imputePipeline' not in config['pipeline_versions']:
-    config['pipeline_versions']['imputePipeline'] = 'v0.5.1'
-if 'shapeit5_pipeline' not in config['pipeline_versions']:
-    config['pipeline_versions']['shapeit5_pipeline'] = '866c2e3'
-
-version_shapeit = config['pipeline_versions']['shapeit5_pipeline']
-if re.match(r'/', version_shapeit):
-    snakefile_shapeit = os.path.join(
-        os.path.normpath(version_shapeit), 'workflow', 'Snakefile')
-else:
-    snakefile_shapeit = github("marcoralab/shapeit5_pipeline",
-        path="workflow/Snakefile", tag=version_shapeit)
-
 if impute_datasets:
     config_impute = config["imputation"]
     config_impute["chroms"] = config["chroms"]
@@ -287,6 +263,24 @@ if impute_datasets:
         config: config_impute
     
     use rule * from imputation as imputation_*
+
+
+    rule link_impute:
+        input: unpack(preimpute_files)
+        output:
+            bed = "intermediate/impute_start/{dataset}.bed",
+            bim = "intermediate/impute_start/{dataset}.bim",
+            fam = "intermediate/impute_start/{dataset}.fam"
+        resources:
+            mem_mb = 1000,
+            time_min = 30
+        shell:
+            '''
+    cp {input.bed} {output.bed}
+    cp {input.bim} {output.bim}
+    cp {input.fam} {output.fam}
+    '''
+    
 
 rule Sample_Flip:
     input:
@@ -467,35 +461,67 @@ def choose_vcf_general(wc):
 def choose_tbi_general(wc):
     return choose_vcf_general(wc) + '.tbi'
 
-rule bcf:
-    input:
-        vcf = choose_vcf_general,
-        tbi = choose_tbi_general,
-        fasta = lambda wc: ref_fasta[wc["build"]]
-    output: "intermediate/{dataset}.{build}.chr{chrom}.bcf"
-    conda: "envs/bcftools.yaml"
-    threads: 1
-    resources:
-        mem_mb = 4000,
-        time_min = 1440
-    shell:
-        """
-bcftools norm -Ob -o {output} -d none -f {input.fasta} {input.vcf} && \
-bcftools index {output}
-"""
+if phase_datasets: 
+    ruleorder: vcf > vcf_presplit > splits > merge_gnomix > Concatenate > Compress > shapeit_index_vcf
 
-module shapeit:
-    snakefile: snakefile_shapeit
-    config: {'AC': True}
+    version_shapeit = config['pipeline_versions']['shapeit5_pipeline']
+    if re.match(r'/', version_shapeit):
+        snakefile_shapeit = os.path.join(
+            os.path.normpath(version_shapeit), 'workflow', 'Snakefile')
+    else:
+        snakefile_shapeit = github("marcoralab/shapeit5_pipeline",
+            path="workflow/Snakefile", tag=version_shapeit)
 
-use rule * from shapeit as shapeit_*
+    rule bcf:
+        input:
+            vcf = choose_vcf_general,
+            tbi = choose_tbi_general,
+            fasta = lambda wc: ref_fasta[wc["build"]]
+        output: "intermediate/{dataset}.{build}.chr{chrom}.bcf"
+        conda: "envs/bcftools.yaml"
+        threads: 1
+        resources:
+            mem_mb = 4000,
+            time_min = 1440
+        shell:
+            """
+    bcftools norm -Ob -o {output} -d none -f {input.fasta} {input.vcf} && \
+    bcftools index {output}
+    """
 
-use rule convert_phased from shapeit as shapeit_convert_phased with:
-    output: "intermediate/{genotypes}.hg38.chr{chrom}.shapeit5.vcf.gz"
+    module shapeit:
+        snakefile: snakefile_shapeit
+        config: {'AC': True}
 
-use rule shapeit_filter from shapeit as shapeit_shapeit_filter with:
-    input: "intermediate/{genotypes}.hg38.chr{chrom}.bcf"
-    output: temp('temp/shapeit_filtered/{genotypes}.chr{chrom}.filtered.bcf')
+    use rule * from shapeit as shapeit_*
+
+    use rule convert_phased from shapeit as shapeit_convert_phased with:
+        output: "intermediate/{genotypes}.hg38.chr{chrom}.shapeit5.vcf.gz"
+
+    use rule shapeit_filter from shapeit as shapeit_shapeit_filter with:
+        input: "intermediate/{genotypes}.hg38.chr{chrom}.bcf"
+        output: temp('temp/shapeit_filtered/{genotypes}.chr{chrom}.filtered.bcf')
+
+    rule eagle:
+        input:
+            target = rules.bcf.output,
+            ref = lambda wc: expand("reference_proc/{refname}.{{build}}.chr{{chrom}}.bcf", refname=ref_name[wc['build']])
+        output: "intermediate/{dataset}.{build}.chr{chrom}.eagle2.vcf.gz"
+        params:
+            outstem = "intermediate/{dataset}.{build}.chr{chrom}.eagle2"
+        log: "logs/{dataset}_{build}_chr{chrom}.eagle.log"
+        threads: 20
+        resources:
+            mem_mb = 4000,
+            walltime = '96:00'
+        container: 'docker://befh/eagle:v2.4.1'
+        shell:
+            '''
+    eagle --vcfTarget={input.target} --vcfRef={input.ref} \
+      --geneticMapFile=/tables/genetic_map_{wildcards.build}_withX.txt.gz \
+      --outPrefix={params.outstem} --numThreads={threads} --vcfOutFormat=z \
+      2>&1 | tee {log}
+    '''
 
 rule makeref:
     input:
@@ -658,27 +684,6 @@ bcftools view --regions-file {input.samp} --samples-file {input.ref_samples} --f
 bcftools index -f {output}
 '''
 
-rule eagle:
-    input:
-        target = rules.bcf.output,
-        ref = lambda wc: expand("reference_proc/{refname}.{{build}}.chr{{chrom}}.bcf", refname=ref_name[wc['build']])
-    output: "intermediate/{dataset}.{build}.chr{chrom}.eagle2.vcf.gz"
-    params:
-        outstem = "intermediate/{dataset}.{build}.chr{chrom}.eagle2"
-    log: "logs/{dataset}_{build}_chr{chrom}.eagle.log"
-    threads: 20
-    resources:
-        mem_mb = 4000,
-        walltime = '96:00'
-    container: 'docker://befh/eagle:v2.4.1'
-    shell:
-        '''
-eagle --vcfTarget={input.target} --vcfRef={input.ref} \
-  --geneticMapFile=/tables/genetic_map_{wildcards.build}_withX.txt.gz \
-  --outPrefix={params.outstem} --numThreads={threads} --vcfOutFormat=z \
-  2>&1 | tee {log}
-'''
-
 rule geneticMapGnomix:
     input: HTTP.remote("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_{build}_withX.txt.gz") if iconnect else ''
     output: "reference_proc/genetic_map_{build}_withX.gmap"
@@ -796,7 +801,7 @@ rule gnomix_model:
     params:
         output_folder = 'output/models/{dataset}_{build}_chr{chrom}',
         phase = 'False', #True or False
-    threads: 40
+    threads: 64
     resources:
         mem_mb = 8000,
         walltime = '140:00'
@@ -817,13 +822,13 @@ rule gnomix:
         tbi = rules.splits.output.tbi,
         model = rules.gnomix_model.output
     output:
-        vcf = temp(gchunkdir + '/query_file_phased.vcf'),
+        vcf = temp(gchunkdir + '/query_file_phased.vcf') if gnofix else [],
         fb = gchunkdir + '/query_results.fb',
         msp = gchunkdir + '/query_results.msp'
     params:
         output_folder = gchunkdir,
-        phase = 'True', #True or False
-    threads: 40
+        phase = str(gnofix),
+    threads: 64
     resources:
         mem_mb = 3000,
         walltime = '140:00'
