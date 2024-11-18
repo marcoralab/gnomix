@@ -447,7 +447,7 @@ rule vcf_presplit:
     shell: '''
 filt="{params.filt}"
 if [[ -z "${{filt// }}" ]]; then
-  ln -rs {input} {output.vcf}
+  cp {input} {output.vcf}
 else
   bcftools view {params.filt} -Oz -o {output.vcf} {input}
 fi
@@ -715,12 +715,12 @@ def choose_vcf_gnomix(wc):
     
 rule vcf_gnomix:
     input: choose_vcf_gnomix
-    output: "intermediate/{dataset}.{build}.chr{chrom}.forgnomix.vcf.gz",
+    output: temp("intermediate/{dataset}.{build}.chr{chrom}.forgnomix.vcf.gz"),
     resources:
         mem_mb = 4000,
         time_min = 240
     shell: '''
-ln -rs {input} {output}
+cp {input} {output}
 '''
 
 rule sample_list:
