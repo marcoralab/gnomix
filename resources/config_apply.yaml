@@ -2,7 +2,7 @@ verbose: True
 seed: 94305
 
 model: 
-  n_cores: 40           # number of CPUs to use, default is maximum
+  n_cores:                   # number of CPUs to use, default is maximum
 
 inference:
   bed_file_output: False

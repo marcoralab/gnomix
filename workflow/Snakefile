@@ -1,6 +1,8 @@
 from snakemake.utils import min_version
 min_version("7.0")
 
+threads_train = 48
+threads_apply = 64
 
 import re
 from snakemake.remote.FTP import RemoteProvider as FTPRemoteProvider
@@ -136,7 +138,8 @@ impute_fasta = ref_fasta[impute_build]
 gnofix = config['rephase'] if 'rephase' in config else True
 
 gconfig_filename_dict = {
-  k: ("config_array.yaml" if v else "config.yaml") for k, v in zip(DATASETS, array)}
+  k: ("config_array.64cores.yaml" if v else f"config.{threads_train}cores.yaml")
+      for k, v in zip(DATASETS, array)}
 gconfig_local_dict = {
   k: f'intermediate/configs/{v}' for k, v in gconfig_filename_dict.items()}
 
@@ -789,6 +792,26 @@ rule download_config:
         time_min = 5
     shell: 'cp {input} {output}'
 
+rule update_cores_config:
+    input: rules.download_config.output
+    output: 'intermediate/configs/{conf}.{ncore}cores.yaml'
+    threads: 1
+    resources:
+        mem_mb = 128,
+        time_min = 1
+    shell: "sed 's|n_cores:   |n_cores: {wildcards.ncore}|' {input} > {output}"
+
+rule update_cores_applyconfig:
+    input: "resources/config_apply.yaml"
+    output: 'config.yaml'
+    params:
+        ncore = threads_apply
+    threads: 1
+    resources:
+        mem_mb = 128,
+        time_min = 1
+    shell: "sed 's|n_cores:   |n_cores: {params.ncore}|' {input} > {output}"
+
 rule gnomix_model:
     input:
         query = "intermediate/{dataset}.{build}.chr{chrom}.modelfit.vcf.gz",
@@ -801,13 +824,14 @@ rule gnomix_model:
     params:
         output_folder = 'output/models/{dataset}_{build}_chr{chrom}',
         phase = 'False', #True or False
-    threads: 64
+    threads: threads_train
     resources:
         mem_mb = 8000,
         walltime = '140:00'
     container: "docker://befh/gnomix:v2"
     shell:
         '''
+export NUMEXPR_MAX_THREADS=256
 python3 /gnomix/gnomix.py {input.query} {params.output_folder} \
   {wildcards.chrom} {params.phase} \
   {input.genetic_map} {input.reference} {input.sample_map} \
@@ -820,7 +844,8 @@ rule gnomix:
     input:
         query = rules.splits.output.vcf,
         tbi = rules.splits.output.tbi,
-        model = rules.gnomix_model.output
+        model = rules.gnomix_model.output,
+        config = "config.yaml"
     output:
         vcf = temp(gchunkdir + '/query_file_phased.vcf') if gnofix else [],
         fb = gchunkdir + '/query_results.fb',
@@ -828,7 +853,7 @@ rule gnomix:
     params:
         output_folder = gchunkdir,
         phase = str(gnofix),
-    threads: 64
+    threads: threads_apply
     resources:
         mem_mb = 3000,
         walltime = '140:00'
@@ -884,7 +909,7 @@ rule merge_gnomix:
     threads: 2
     resources:
         mem_mb = 4000,
-        walltime = '24:00'
+        time_min = 24 * 60
     conda: "envs/gnomad_merge.yaml"
     shell:
         r'''
@@ -957,7 +982,7 @@ rule Concatenate:
     threads: 4
     resources:
         mem_mb = 4000,
-        walltime = '24:00'
+        time_min = 24 * 60
     conda: "envs/bcftools.yaml"
     shell:
         r'''
@@ -975,10 +1000,11 @@ rule Merge:
     threads: 4
     resources:
         mem_mb = 4000,
-        walltime = '24:00'
+        time_min = 24 * 60
     conda: "envs/bcftools.yaml"
     shell:
         r'''
 bcftools merge -m none -Oz -o {output.vcf} --threads 2 {input.vcf}
 bcftools index -tf {output.vcf}
 '''
+
