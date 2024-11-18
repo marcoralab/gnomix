@@ -466,8 +466,6 @@ def choose_tbi_general(wc):
     return choose_vcf_general(wc) + '.tbi'
 
 if phase_datasets: 
-    ruleorder: vcf > vcf_presplit > splits > merge_gnomix > Concatenate > Compress > shapeit_index_vcf
-
     version_shapeit = config['pipeline_versions']['shapeit5_pipeline']
     if re.match(r'/', version_shapeit):
         snakefile_shapeit = os.path.join(
