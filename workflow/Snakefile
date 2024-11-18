@@ -138,8 +138,9 @@ impute_fasta = ref_fasta[impute_build]
 gnofix = config['rephase'] if 'rephase' in config else True
 
 gconfig_filename_dict = {
-  k: ("config_array.64cores.yaml" if v else f"config.{threads_train}cores.yaml")
-      for k, v in zip(DATASETS, array)}
+  k: (f"config_array.{threads_train}cores.yaml" if v
+      else f"config.{threads_train}cores.yaml")
+  for k, v in zip(DATASETS, array)}
 gconfig_local_dict = {
   k: f'intermediate/configs/{v}' for k, v in gconfig_filename_dict.items()}
 
