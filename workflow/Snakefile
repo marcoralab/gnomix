@@ -36,7 +36,7 @@ if 'pipeline_versions' not in config:
 if 'imputePipeline' not in config['pipeline_versions']:
     config['pipeline_versions']['imputePipeline'] = 'v0.5.1'
 if 'shapeit5_pipeline' not in config['pipeline_versions']:
-    config['pipeline_versions']['shapeit5_pipeline'] = 'ede32a11cc7c7fb9ea0a8f12f437c8eb2e18c601'
+    config['pipeline_versions']['shapeit5_pipeline'] = 'd94ab984a105afe4e5b0d89aa30288fcd3ad90e9'
 
 reporoot = "raw.githubusercontent.com/AI-sandbox/gnomix/main" 
 
