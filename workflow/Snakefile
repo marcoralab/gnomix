@@ -311,7 +311,8 @@ rule Sample_ChromPosRefAlt:
         snplist = temp("intermediate/{dataset}.{build}.from{inputtype}_flipped_snplist")
     threads: 2
     resources:
-        mem_mb = 8000,
+        #mem_mb = 8000,
+        mem_mb = 16000,
         time_min = 30
     container: 'docker://befh/r_env_gwasamplefilt:5'
     script: 'scripts/bim_ChromPosRefAlt.R'
@@ -340,7 +341,8 @@ rule plink_vcf:
         out = "intermediate/{dataset}.{build}.from{inputtype}.plink_contigs"
     threads: 40
     resources:
-        mem_mb = 4000,
+        #mem_mb = 4000,
+        mem_mb = 160000,
         time_min = 1440
     conda: "envs/plink2.yaml"
     shell:
@@ -356,7 +358,8 @@ rule rename_vcf:
     output: temp("intermediate/{dataset}.{build}.from{inputtype}.vcf.gz")
     threads: 4
     resources:
-        mem_mb = 2048,
+        #mem_mb = 2048,
+        mem_mb = 8192,
         time_min = 2880
     conda: "envs/bcftools.yaml"
     shell:
@@ -517,8 +520,10 @@ if phase_datasets:
         log: "logs/{dataset}_{build}_chr{chrom}.eagle.log"
         threads: 20
         resources:
-            mem_mb = 4000,
-            walltime = '96:00'
+            #mem_mb = 4000,
+            mem_mb = 80000,
+            #walltime = '96:00'
+            time_min = 5760
         container: 'docker://befh/eagle:v2.4.1'
         shell:
             '''
@@ -536,7 +541,8 @@ rule makeref:
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
-        mem_mb = 4000,
+        #mem_mb = 4000,
+        mem_mb = 16000,
         time_min = 60
     shell:
         '''
@@ -566,7 +572,8 @@ rule ref_admixture_filterprune:
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
-        mem_mb = 2048,
+        #mem_mb = 2048,
+        mem_mb = 8192,
         time_min = 360
     shell:
         '''
@@ -611,7 +618,8 @@ rule admixture:
     log: 'reference_proc/gnomad_1kg_hgdp.12.log'
     threads: 40
     resources:
-        mem_mb = 5120, # Very efficient memory usage. Previous run used 2936 MB
+        #mem_mb = 5120, # Very efficient memory usage. Previous run used 2936 MB
+        mem_mb = 204800,
         time_min = 1440 # 24 hours. Should take <= 14 hours
     container: 'docker://befh/r_env_gwasamplefilt:5'
     shell:
@@ -652,8 +660,10 @@ rule get_refsamp:
     output: "reference_proc/{refname}.{build}.fromsmap.samplist" 
     threads: 4
     resources:
-        mem_mb = 4000,
-        walltime = '96:00'
+        #mem_mb = 4000,
+        mem_mb = 16000,
+        #walltime = '96:00'
+        time_min = 5760
     shell: r'''awk -F '\t' 'NR > 1 {{print $1}}' {input} > {output}'''
 
 def choose_vcf_ref(wc):
@@ -681,8 +691,10 @@ rule filter_ref:
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
-        mem_mb = 1024,
-        walltime = '96:00'
+        #mem_mb = 1024,
+        mem_mb = 4096,
+        #walltime = '96:00'
+        time_min = 5760
     shell:
         '''
 bcftools view --regions-file {input.samp} --samples-file {input.ref_samples} --force-samples -Oz -o {output} {input.ref}
@@ -828,8 +840,10 @@ rule gnomix_model:
         phase = 'False', #True or False
     threads: threads_train
     resources:
-        mem_mb = 8000,
-        walltime = '140:00'
+        #mem_mb = 8000,
+        mem_mb = 32000,
+        #walltime = '140:00'
+        time_min = 8400
     container: "docker://befh/gnomix:v2"
     shell:
         '''
@@ -857,8 +871,10 @@ rule gnomix:
         phase = str(gnofix),
     threads: threads_apply
     resources:
-        mem_mb = 3000,
-        walltime = '140:00'
+        #mem_mb = 3000,
+        mem_mb = 120000,
+        #walltime = '140:00'
+        time_min = 8400
     container: "docker://befh/gnomix:v2"
     shell:
         '''
@@ -873,8 +889,10 @@ rule Compress:
         tbi = gchunkdir + '/{dataset}_chr{chrom}.vcf.gz.tbi'
     threads: 2
     resources:
-        mem_mb = 4000,
-        walltime = '24:00'
+        #mem_mb = 4000,
+        mem_mb = 8000,
+        #walltime = '24:00'
+        time_min = 1440
     conda: "envs/bcftools.yaml"
     shell:
         '''
@@ -910,8 +928,10 @@ rule merge_gnomix:
         tmp = temp('output/merged/{dataset}_{build}_chr{chrom}.tmp')
     threads: 2
     resources:
-        mem_mb = 4000,
-        time_min = 24 * 60
+        #mem_mb = 4000,
+        mem_mb = 8000,
+        #walltime = '24:00'
+        time_min = 1440
     conda: "envs/gnomad_merge.yaml"
     shell:
         r'''
@@ -983,8 +1003,10 @@ rule Concatenate:
         tbi = 'output/{dataset}_{build}_chrall.vcf.gz.tbi'
     threads: 4
     resources:
-        mem_mb = 4000,
-        time_min = 24 * 60
+        #mem_mb = 4000,
+        mem_mb = 16000,
+        #walltime = '24:00'
+        time_min = 1440
     conda: "envs/bcftools.yaml"
     shell:
         r'''
@@ -1001,6 +1023,10 @@ rule Merge:
         tbi = "output/merged.vcf.gz.tbi"
     threads: 4
     resources:
+        #mem_mb = 4000,
+        mem_mb = 16000,
+        #walltime = '24:00'
+        time_min = 1440
         mem_mb = 4000,
         time_min = 24 * 60
     conda: "envs/bcftools.yaml"
