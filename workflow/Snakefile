@@ -150,7 +150,8 @@ def dict_settings(setting):
 build_dict = dict_settings(BUILD)
 
 wildcard_constraints:
-    build='hg(19|38)'
+    build=r'hg(19|38)',
+    dataset=r'[^/]+'
 
 if len(CHROMS) == 1:
     concatenated = expand('output/merged/{{dataset}}_{{build}}_chr{chrom}.vcf.gz', chrom=CHROMS)[0]
@@ -421,13 +422,15 @@ rule vcf_split:
     output:
         vcf = temp("intermediate/{dataset}.{build}.chr{chrom}.pipesplit.vcf.gz"),
         tbi = "intermediate/{dataset}.{build}.chr{chrom}.pipesplit.vcf.gz.tbi"
+    params:
+        contig = lambda wc: wc.chrom if wc.build == "hg19" else f'chr{wc.chrom}'
     conda: "envs/bcftools.yaml"
     threads: 1
     resources:
         mem_mb = 16000,
         time_min = 8600
     shell: '''
-bcftools view -r {wildcards.chrom} -Oz -o {output.vcf} {input.vcf} && \
+bcftools view -r {params.contig} -Oz -o {output.vcf} {input.vcf} && \
 sleep 5 && \
 bcftools index -t {output.vcf}
 '''
@@ -493,7 +496,7 @@ if phase_datasets:
 
     module shapeit:
         snakefile: snakefile_shapeit
-        config: {'AC': True}
+        config: {'AC': not config.get("SHAPEIT5_calcAC", False)}
 
     use rule * from shapeit as shapeit_*
 

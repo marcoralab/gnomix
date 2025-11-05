@@ -162,7 +162,7 @@ if (!exists("snakemake")) {
 }
 
 out_admix |>
-  filter_output(0.8) |>
+  filter_output(0.95) |>
   select("#Sample" = IID, Panel = admixture_super_pop_max) |>
   write_tsv(out_smap) |>
   pull("#Sample") |>

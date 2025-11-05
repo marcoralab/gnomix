@@ -24,3 +24,8 @@ run_presentation
 temp/
 .vscode/
 resources/
+config.yaml
+config/config.yaml
+gnomad.genomes.v3.1.2.hgdp_tgp.pruned.12.P
+gnomad.genomes.v3.1.2.hgdp_tgp.pruned.12.Q
+workflow/modules/
