@@ -1,35 +1,24 @@
 from snakemake.utils import min_version
-min_version("7.0")
+min_version("8.0")
 
 threads_train = 48
 threads_apply = 64
 
 import re
-from snakemake.remote.FTP import RemoteProvider as FTPRemoteProvider
-from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
-
 from urllib.request import urlopen
 from urllib.error import URLError
 
-try:
-    response = urlopen('https://www.google.com/', timeout=10)
-    iconnect = True
-except URLError as ex:
-    iconnect = False
-
+iconnect = False
+if not ('nointernet' in config and config['nointernet']):
+    try:
+        response = urlopen('https://www.google.com/', timeout=10)
+        iconnect = True
+    except URLError as ex:
+        pass
+ftp = storage.ftp if iconnect else lambda x: x
+http = storage.http if iconnect else lambda x: x
 
 configfile: "config/config.yaml"
-
-class dummyprovider:
-    def remote(string_, allow_redirects="foo", immediate_close="bar"):
-        return string_
-
-if iconnect: # and not ('nointernet' in config and config['nointernet']):
-    FTP = FTPRemoteProvider()
-    HTTP = HTTPRemoteProvider()
-else:
-    FTP = dummyprovider
-    HTTP = dummyprovider
 
 if 'pipeline_versions' not in config:
     config['pipeline_versions'] = {}
@@ -38,13 +27,13 @@ if 'imputePipeline' not in config['pipeline_versions']:
 if 'shapeit5_pipeline' not in config['pipeline_versions']:
     config['pipeline_versions']['shapeit5_pipeline'] = 'd94ab984a105afe4e5b0d89aa30288fcd3ad90e9'
 
-reporoot = "raw.githubusercontent.com/AI-sandbox/gnomix/main" 
+reporoot = "https://raw.githubusercontent.com/AI-sandbox/gnomix/main" 
 
 ref_vcf = {"hg19": "reference/1000gRaw.hg19.chr{chrom}.vcf.gz",
            "hg38": "/sc/arion/projects/sharpa01a/1000Genomes_HGDP_Phased_VCFs/hgdp.tgp.gwaspy.merged.chr{chrom}.merged.cleaned.vcf.gz"} # "reference/1000gRaw.GRCh38.chr{chrom}.vcf.gz"}
 ref_fasta = {"hg19": "reference/human_g1k_hg19.fasta",
              "hg38": "reference/human_gatk_GRCh38.fasta"}
-ref_pops = {"hg19": HTTP.remote(reporoot + "/demo/data/1000g.smap") if iconnect else '',
+ref_pops = {"hg19": http(reporoot + "/demo/data/1000g.smap") if iconnect else '',
             "hg38": 'reference_proc/hgdp_1kg_filt.smap'}
 ref_name = {"hg19": "1000g", "hg38": "hgdp_1kg"}
 
@@ -58,11 +47,11 @@ tgfasta = dict(
 
 def fasta_remote(wc):
     gbuild = wc.gbuild
-    return HTTP.remote(tgfasta[gbuild])
+    return http(tgfasta[gbuild])
     # if gbuild == 'GRCh38':
-    #     return FTP.remote(tgfasta['GRCh38'], immediate_close=True)
+    #     return ftp(tgfasta['GRCh38'])
     # else:
-    #     return HTTP.remote(tgfasta[gbuild])
+    #     return http(tgfasta[gbuild])
 
 def fasta_md5(wc):
     gbuild = wc.gbuild
@@ -311,7 +300,7 @@ rule Sample_ChromPosRefAlt:
         snplist = temp("intermediate/{dataset}.{build}.from{inputtype}_flipped_snplist")
     threads: 2
     resources:
-        mem_mb = 8000,
+        mem_mb = 16000,
         time_min = 30
     container: 'docker://befh/r_env_gwasamplefilt:5'
     script: 'scripts/bim_ChromPosRefAlt.R'
@@ -340,7 +329,7 @@ rule plink_vcf:
         out = "intermediate/{dataset}.{build}.from{inputtype}.plink_contigs"
     threads: 40
     resources:
-        mem_mb = 4000,
+        mem_mb = 160000,
         time_min = 1440
     conda: "envs/plink2.yaml"
     shell:
@@ -356,7 +345,7 @@ rule rename_vcf:
     output: temp("intermediate/{dataset}.{build}.from{inputtype}.vcf.gz")
     threads: 4
     resources:
-        mem_mb = 2048,
+        mem_mb = 8192,
         time_min = 2880
     conda: "envs/bcftools.yaml"
     shell:
@@ -493,15 +482,16 @@ if phase_datasets:
     bcftools norm -Ob -o {output} -d none -f {input.fasta} {input.vcf} && \
     bcftools index {output}
     """
+    config_shapeit = {
+        'AC': not config.get("SHAPEIT5_calcAC", False),
+        'outfile': "intermediate/{genotypes}.hg38.chr{chrom}.shapeit5.vcf.gz"
+    }
 
     module shapeit:
         snakefile: snakefile_shapeit
-        config: {'AC': not config.get("SHAPEIT5_calcAC", False)}
+        config: config_shapeit
 
     use rule * from shapeit as shapeit_*
-
-    use rule convert_phased from shapeit as shapeit_convert_phased with:
-        output: "intermediate/{genotypes}.hg38.chr{chrom}.shapeit5.vcf.gz"
 
     use rule shapeit_filter from shapeit as shapeit_shapeit_filter with:
         input: "intermediate/{genotypes}.hg38.chr{chrom}.bcf"
@@ -517,8 +507,8 @@ if phase_datasets:
         log: "logs/{dataset}_{build}_chr{chrom}.eagle.log"
         threads: 20
         resources:
-            mem_mb = 4000,
-            walltime = '96:00'
+            mem_mb = 80000,
+            runtime = "96h"
         container: 'docker://befh/eagle:v2.4.1'
         shell:
             '''
@@ -536,7 +526,7 @@ rule makeref:
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
-        mem_mb = 4000,
+        mem_mb = 16000,
         time_min = 60
     shell:
         '''
@@ -548,7 +538,7 @@ bcftools view -Ou -c 2 {input.vcf} | \
 
 rule process_smap_1kg_hgdp:
     input:
-        metadata = HTTP.remote("storage.googleapis.com/gcp-public-data--gnomad/release/3.1.2/vcf/genomes/gnomad.genomes.v3.1.2.hgdp_1kg_subset_sample_meta.tsv.bgz")
+        metadata = http("https://storage.googleapis.com/gcp-public-data--gnomad/release/3.1.2/vcf/genomes/gnomad.genomes.v3.1.2.hgdp_1kg_subset_sample_meta.tsv.bgz")
     output:
         table = "reference_proc/hgdp_1kg.popdata.tsv.gz",
         smap = "reference_proc/hgdp_1kg.smap"
@@ -556,6 +546,7 @@ rule process_smap_1kg_hgdp:
     resources:
         mem_mb = 512,
         time_min = 1
+    container: 'docker://befh/r_procadmix:v1'
     script: 'scripts/rule_process_smap_1kg_hgdp.R'
 
 admixstem = "gnomad.genomes.v3.1.2.hgdp_tgp.pruned"
@@ -566,7 +557,7 @@ rule ref_admixture_filterprune:
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
-        mem_mb = 2048,
+        mem_mb = 8192,
         time_min = 360
     shell:
         '''
@@ -611,7 +602,7 @@ rule admixture:
     log: 'reference_proc/gnomad_1kg_hgdp.12.log'
     threads: 40
     resources:
-        mem_mb = 5120, # Very efficient memory usage. Previous run used 2936 MB
+        mem_mb = 204800, # Very efficient memory usage. Previous run used 2936 MB
         time_min = 1440 # 24 hours. Should take <= 14 hours
     container: 'docker://befh/r_env_gwasamplefilt:5'
     shell:
@@ -652,8 +643,8 @@ rule get_refsamp:
     output: "reference_proc/{refname}.{build}.fromsmap.samplist" 
     threads: 4
     resources:
-        mem_mb = 4000,
-        walltime = '96:00'
+        mem_mb = 16000,
+        runtime = "96h"
     shell: r'''awk -F '\t' 'NR > 1 {{print $1}}' {input} > {output}'''
 
 def choose_vcf_ref(wc):
@@ -681,8 +672,8 @@ rule filter_ref:
     conda: "envs/bcftools.yaml"
     threads: 4
     resources:
-        mem_mb = 1024,
-        walltime = '96:00'
+        mem_mb = 4096,
+        runtime = "96h"
     shell:
         '''
 bcftools view --regions-file {input.samp} --samples-file {input.ref_samples} --force-samples -Oz -o {output} {input.ref}
@@ -690,7 +681,7 @@ bcftools index -f {output}
 '''
 
 rule geneticMapGnomix:
-    input: HTTP.remote("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_{build}_withX.txt.gz") if iconnect else ''
+    input: http("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_{build}_withX.txt.gz") if iconnect else ''
     output: "reference_proc/genetic_map_{build}_withX.gmap"
     resources:
         mem_mb = 1000,
@@ -786,7 +777,7 @@ bcftools index -tf {output.vcf}
 '''
 
 rule download_config:
-    input: HTTP.remote(f'{reporoot}/configs/{{conf}}.yaml') if iconnect else f'{reporoot}/configs/{{conf}}.yaml'
+    input: http(f'{reporoot}/configs/{{conf}}.yaml') if iconnect else f'{reporoot}/configs/{{conf}}.yaml'
     output: 'intermediate/configs/{conf}.yaml'
     threads: 1
     resources:
@@ -829,7 +820,7 @@ rule gnomix_model:
     threads: threads_train
     resources:
         mem_mb = 8000,
-        walltime = '140:00'
+        runtime = "140h"
     container: "docker://befh/gnomix:v2"
     shell:
         '''
@@ -858,7 +849,7 @@ rule gnomix:
     threads: threads_apply
     resources:
         mem_mb = 3000,
-        walltime = '140:00'
+        runtime = "140h"
     container: "docker://befh/gnomix:v2"
     shell:
         '''
@@ -873,8 +864,8 @@ rule Compress:
         tbi = gchunkdir + '/{dataset}_chr{chrom}.vcf.gz.tbi'
     threads: 2
     resources:
-        mem_mb = 4000,
-        walltime = '24:00'
+        mem_mb = 8000,
+        runtime = "24h"
     conda: "envs/bcftools.yaml"
     shell:
         '''
@@ -910,7 +901,7 @@ rule merge_gnomix:
         tmp = temp('output/merged/{dataset}_{build}_chr{chrom}.tmp')
     threads: 2
     resources:
-        mem_mb = 4000,
+        mem_mb = 8000,
         time_min = 24 * 60
     conda: "envs/gnomad_merge.yaml"
     shell:
@@ -983,7 +974,7 @@ rule Concatenate:
         tbi = 'output/{dataset}_{build}_chrall.vcf.gz.tbi'
     threads: 4
     resources:
-        mem_mb = 4000,
+        mem_mb = 16000,
         time_min = 24 * 60
     conda: "envs/bcftools.yaml"
     shell:
@@ -1001,7 +992,7 @@ rule Merge:
         tbi = "output/merged.vcf.gz.tbi"
     threads: 4
     resources:
-        mem_mb = 4000,
+        mem_mb = 16000,
         time_min = 24 * 60
     conda: "envs/bcftools.yaml"
     shell:
@@ -1010,3 +1001,5 @@ bcftools merge -m none -Oz -o {output.vcf} --threads 2 {input.vcf}
 bcftools index -tf {output.vcf}
 '''
 
+
+### Processed by update_sm8plus.py for Snakemake 8+ ###
