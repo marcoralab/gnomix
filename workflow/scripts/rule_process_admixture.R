@@ -15,13 +15,12 @@ if (exists("snakemake")) {
   out_rda <- snakemake@output[["rda"]]
   out_samplist <- snakemake@output[["samplist"]]
 } else {
-  setwd("/sc/arion/projects/load/users/fultob01/projects/nadmixture")
-  in_q <- "gnomad.genomes.v3.1.2.hgdp_tgp.pruned.12.Q"
-  in_fam <- "filtered_gnomad_1kg_hgdp/gnomad.genomes.v3.1.2.hgdp_tgp.pruned.fam"
-  in_pops <- "outputs/hgdp_1kg.popdata.tsv"
-  out_smap <- "reference_proc/hgdp_1kg.filt.smap"
-  out_rda <- "reference_proc/hgdp_1kg.admixture.rda"
-  out_samplist <- "reference_proc/hgdp_1kg.filt.samplist"
+  in_q <- "reference_proc/gnomad_1kg_hgdp.12.Q"
+  in_fam <- "reference_proc/gnomad.genomes.v3.1.2.hgdp_tgp.pruned.fam"
+  in_pops <- "reference_proc/hgdp_1kg.popdata.tsv.gz"
+  out_smap <- "reference_proc/hgdp_1kg.filt.testing.smap"
+  out_rda <- "reference_proc/hgdp_1kg.admixture.testing.rda"
+  out_samplist <- "reference_proc/hgdp_1kg.filt.testing.samplist"
 }
 
 # Fam and popfiles
@@ -106,6 +105,13 @@ assign_super_vec <- pull(assign_admix, anc, cluster)
 assign_cname_vec_i <- pull(assign_admix, cluster, cname)
 superpops <- rownames(heatmap_mat)
 
+eursas <- assign_admix |>
+  filter(anc == "SAS") |>
+  filter(EUR == max(EUR)) |>
+  pull(cname)
+
+eursas_k <- unname(assign_cname_vec_i[eursas])
+
 rm(admix_labs, assign_labels)
 
 # Assign individuals
@@ -121,17 +127,25 @@ for (sp in superpops) {
   tbl_admix_collapsed <- collapse_superpop(tbl_admix_collapsed, sp)
 }
 
-tbl_admix_inf <- tbl_admix_collapsed |>
+# Moves the shared cluster from SAS to EUR for EUR subjects
+tbl_admix_corrected <-
+  tbl_admix_collapsed |>
+  (\(.) mutate(.,
+    maxclust = colnames(.)[max.col(select(., matches("^k\\d+$")))],
+    "Maximum Cluster" = unname(assign_cname_vec[maxclust]),
+    admixture_super_pop_max = map_chr(maxclust, \(x) assign_super_vec[[x]]),
+    admixture_cluster_max = map_chr(maxclust, \(x) assign_cname_vec[[x]]),
+    EUR = if_else(admixture_super_pop_max == "EUR", EUR + !!sym(eursas_k), EUR),
+    SAS = if_else(admixture_super_pop_max == "EUR", SAS - !!sym(eursas_k), SAS)
+   ))()
+
+tbl_admix_inf <-
+  tbl_admix_corrected |>
   rowwise(IID) |>
   mutate(maxval = max(c_across(all_of(cluster_cols))),
          matchval = which.max(c_across(all_of(cluster_cols))),
          max_spop_prop = max(c_across(all_of(superpops)))) |>
   ungroup() |>
-  (\(.) mutate(.,
-    maxclust = colnames(.)[max.col(select(., matches("^k\\d+$")))],
-    "Maximum Cluster" = unname(assign_cname_vec[maxclust]),
-    admixture_super_pop_max = map_chr(maxclust, \(x) assign_super_vec[[x]]),
-    admixture_cluster_max = map_chr(maxclust, \(x) assign_cname_vec[[x]])))() |>
   arrange(spop, admixture_super_pop_max, matchval, -maxval) |>
   mutate(
     pop = forcats::fct_inorder(pop),
@@ -155,10 +169,6 @@ filter_output <- \(tbl, max_prop) {
            spop_checked == as.character(admixture_super_pop_max) &
            spop_checked != "OCE" &
            max_spop_prop >= max_prop)
-}
-
-if (!exists("snakemake")) {
-  setwd("/sc/arion/projects/load/users/fultob01/projects/gnomix_adsp")
 }
 
 out_admix |>
