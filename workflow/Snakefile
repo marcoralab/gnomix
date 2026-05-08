@@ -33,7 +33,7 @@ ref_vcf = {"hg19": "reference/1000gRaw.hg19.chr{chrom}.vcf.gz",
            "hg38": "/sc/arion/projects/sharpa01a/1000Genomes_HGDP_Phased_VCFs/hgdp.tgp.gwaspy.merged.chr{chrom}.merged.cleaned.vcf.gz"} # "reference/1000gRaw.GRCh38.chr{chrom}.vcf.gz"}
 ref_fasta = {"hg19": "reference/human_g1k_hg19.fasta",
              "hg38": "reference/human_gatk_GRCh38.fasta"}
-ref_pops = {"hg19": http(reporoot + "/demo/data/1000g.smap") if iconnect else [],
+ref_pops = {"hg19": ancient(http(reporoot + "/demo/data/1000g.smap")) if iconnect else [],
             "hg38": 'reference_proc/hgdp_1kg_filt.smap'}
 ref_name = {"hg19": "1000g", "hg38": "hgdp_1kg"}
 
@@ -47,7 +47,7 @@ tgfasta = dict(
 
 def fasta_remote(wc):
     gbuild = wc.gbuild
-    return http(tgfasta[gbuild])
+    return ancient(http(tgfasta[gbuild]))
     # if gbuild == 'GRCh38':
     #     return ftp(tgfasta['GRCh38'])
     # else:
@@ -539,7 +539,7 @@ bcftools view -Ou -c 2 {input.vcf} | \
 
 rule process_smap_1kg_hgdp:
     input:
-        metadata = http("https://storage.googleapis.com/gcp-public-data--gnomad/release/3.1.2/vcf/genomes/gnomad.genomes.v3.1.2.hgdp_1kg_subset_sample_meta.tsv.bgz")
+        metadata = ancient(http("https://storage.googleapis.com/gcp-public-data--gnomad/release/3.1.2/vcf/genomes/gnomad.genomes.v3.1.2.hgdp_1kg_subset_sample_meta.tsv.bgz"))
     output:
         table = "reference_proc/hgdp_1kg.popdata.tsv.gz",
         smap = "reference_proc/hgdp_1kg.smap"
@@ -626,7 +626,7 @@ rule process_admixture:
         samplist = "reference_proc/hgdp_1kg.filt.samplist"
     threads: 1
     resources:
-        mem_mb = 512,
+        mem_mb = 4096,
         time_min = 5
     container: 'docker://befh/r_procadmix:v1'
     script: 'scripts/rule_process_admixture.R'
@@ -684,7 +684,7 @@ bcftools index -f {output}
 '''
 
 rule geneticMapGnomix:
-    input: http("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_{build}_withX.txt.gz") if iconnect else []
+    input: ancient(http("https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_{build}_withX.txt.gz") if iconnect else [])
     output: "reference_proc/genetic_map_{build}_withX.gmap"
     localrule: True
     resources:
@@ -781,7 +781,7 @@ bcftools index -tf {output.vcf}
 '''
 
 rule download_config:
-    input: http(f'{reporoot}/configs/{{conf}}.yaml') if iconnect else f'{reporoot}/configs/{{conf}}.yaml'
+    input: ancient(http(f'{reporoot}/configs/{{conf}}.yaml') if iconnect else f'{reporoot}/configs/{{conf}}.yaml')
     output: 'intermediate/configs/{conf}.yaml'
     localrule: True
     threads: 1
